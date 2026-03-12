@@ -49,11 +49,16 @@ class TerminalRequest(BaseModel):
     cwd: str
 
 
-def _session_to_dict(session: Session) -> dict[str, Any]:
+def _session_to_dict(
+    session: Session,
+    matched_terminal_ids: set[str] | None = None,
+) -> dict[str, Any]:
     """Convert a Session dataclass to a JSON-serializable dict."""
-    # Check if this session matches a LCARS terminal by PID
+    # Match session to a LCARS terminal by cwd, skipping already-matched terminals
     terminal_id = None
     for tid, tinfo in lcars_terminals.items():
+        if matched_terminal_ids and tid in matched_terminal_ids:
+            continue
         if tinfo.get("pid") and session.cwd and os.path.realpath(session.cwd) == os.path.realpath(tinfo["cwd"]):
             terminal_id = tid
             break
@@ -161,9 +166,18 @@ def _load_state() -> dict[str, Any]:
         for tid, tinfo in lcars_terminals.items()
     ]
 
+    # Build session dicts, tracking matched terminals to avoid double-matching
+    matched_terminal_ids: set[str] = set()
+    session_dicts = []
+    for s in sessions:
+        d = _session_to_dict(s, matched_terminal_ids)
+        if d.get("terminal_id"):
+            matched_terminal_ids.add(d["terminal_id"])
+        session_dicts.append(d)
+
     return {
         "type": "state",
-        "sessions": [_session_to_dict(s) for s in sessions],
+        "sessions": session_dicts,
         "events": [_event_to_dict(e) for e in all_events],
         "total_cost_usd": total_cost,
         "lcars_terminals": terminal_info,
