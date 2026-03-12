@@ -11,11 +11,35 @@
   // Constants
   // ---------------------------------------------------------------------------
 
-  const WS_URL = 'ws://localhost:1701/ws';
+  const WS_URL = 'ws://' + window.location.host + '/ws';
   const RECONNECT_DELAY_MS = 3000;
   const TOAST_DURATION_MS = 4000;
   const MAX_EVENTS = 50;
   const SESSION_COLORS = ['#DDA88A', '#B399B3', '#8E9ED6', '#B07AA0', '#D4906A', '#9CC5E0'];
+
+  const LCARS_THEME = {
+    background: '#000000',
+    foreground: '#E8E8F0',
+    cursor: '#F0A07A',
+    cursorAccent: '#000000',
+    selectionBackground: 'rgba(192, 160, 192, 0.3)',
+    black: '#000000',
+    red: '#D08080',
+    green: '#80D090',
+    yellow: '#D0C878',
+    blue: '#90A0D0',
+    magenta: '#B080A0',
+    cyan: '#A0C8E8',
+    white: '#E8E8F0',
+    brightBlack: '#707898',
+    brightRed: '#D08080',
+    brightGreen: '#80D090',
+    brightYellow: '#D0C878',
+    brightBlue: '#90A0D0',
+    brightMagenta: '#C0A0C0',
+    brightCyan: '#A0C8E8',
+    brightWhite: '#FFFFFF',
+  };
 
   // ---------------------------------------------------------------------------
   // State
@@ -24,11 +48,15 @@
   let ws = null;
   let previousState = null;
   let currentState = null;
+  let mergedSessions = []; // sessions + synthetic terminal entries
   let selectedSessionId = null;
   let soundEnabled = false;
   let audioCtx = null;
   let userScrolledUp = false;
   let renderedEventKeys = new Set();
+
+  // Terminal state
+  let activeTerminal = null;   // { id, ws, xterm, fitAddon }
 
   // ---------------------------------------------------------------------------
   // DOM references
@@ -48,8 +76,15 @@
     dom.activityFeed = document.getElementById('activity-feed');
     dom.btnRefresh = document.getElementById('btn-refresh');
     dom.btnSound = document.getElementById('btn-sound');
+    dom.btnNewSession = document.getElementById('btn-new-session');
     dom.clock = document.getElementById('clock');
     dom.toastContainer = document.getElementById('toast-container');
+    dom.mainTop = document.getElementById('main-top');
+    dom.panelDetail = document.getElementById('panel-detail');
+    dom.panelAgents = document.getElementById('panel-agents');
+    dom.panelTerminal = document.getElementById('panel-terminal');
+    dom.terminalContainer = document.getElementById('terminal-container');
+    dom.detailView = document.getElementById('detail-view');
   }
 
   // ---------------------------------------------------------------------------
@@ -206,6 +241,207 @@
   }
 
   // ---------------------------------------------------------------------------
+  // Panel switching logic
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Check if the selected session is a LCARS terminal session.
+   */
+  function getSelectedSession() {
+    if (!mergedSessions || mergedSessions.length === 0) return null;
+    return mergedSessions.find(function (s) { return s.id === selectedSessionId; });
+  }
+
+  function isTerminalSession(session) {
+    return session && session.terminal_id;
+  }
+
+  /**
+   * Update panel visibility based on the selected session type.
+   * Detail or terminal is shown; agents panel is always visible.
+   */
+  function updatePanelLayout() {
+    var session = getSelectedSession();
+    var isTerminal = isTerminalSession(session);
+
+    if (isTerminal) {
+      dom.detailView.style.display = 'none';
+      dom.panelTerminal.style.display = 'flex';
+      connectTerminal(session.terminal_id);
+    } else {
+      dom.detailView.style.display = 'flex';
+      dom.panelTerminal.style.display = 'none';
+      // Don't disconnect — keep terminal alive so buffer is preserved
+    }
+    // Agents panel is always visible — no toggle needed
+  }
+
+  // ---------------------------------------------------------------------------
+  // Terminal management
+  // ---------------------------------------------------------------------------
+
+  function connectTerminal(terminalId) {
+    // Already connected to this terminal — re-fit and focus (buffer preserved)
+    if (activeTerminal && activeTerminal.id === terminalId) {
+      // Use double-rAF to ensure browser has computed layout after display:flex
+      requestAnimationFrame(function () {
+        requestAnimationFrame(function () {
+          if (!activeTerminal || !activeTerminal.fitAddon) return;
+          // Clear canvas texture cache so glyphs are redrawn
+          if (activeTerminal.xterm.clearTextureAtlas) {
+            activeTerminal.xterm.clearTextureAtlas();
+          }
+          activeTerminal.fitAddon.fit();
+          // Force SIGWINCH by sending resize — makes the PTY program redraw
+          sendTerminalResize();
+          activeTerminal.xterm.refresh(0, activeTerminal.xterm.rows - 1);
+          activeTerminal.xterm.focus();
+        });
+      });
+      return;
+    }
+
+    // Switching to a different terminal — disconnect the old one
+    disconnectTerminal();
+
+    // Create xterm.js instance
+    var xterm = new Terminal({
+      theme: LCARS_THEME,
+      fontFamily: "'Courier New', monospace",
+      fontSize: 14,
+      cursorBlink: true,
+      allowProposedApi: true,
+    });
+
+    var fitAddon = new FitAddon.FitAddon();
+    xterm.loadAddon(fitAddon);
+
+    xterm.open(dom.terminalContainer);
+    fitAddon.fit();
+    xterm.focus();
+
+    // Connect WebSocket
+    var wsUrl = 'ws://' + window.location.host + '/ws/terminal/' + terminalId;
+    var termWs = new WebSocket(wsUrl);
+
+    termWs.addEventListener('open', function () {
+      // Send initial resize
+      var dims = fitAddon.proposeDimensions();
+      if (dims) {
+        termWs.send(JSON.stringify({
+          type: 'resize',
+          cols: dims.cols,
+          rows: dims.rows,
+        }));
+      }
+    });
+
+    termWs.addEventListener('message', function (event) {
+      xterm.write(event.data);
+    });
+
+    termWs.addEventListener('close', function () {
+      // Terminal WebSocket closed — could reconnect
+    });
+
+    // Forward keystrokes to server
+    xterm.onData(function (data) {
+      if (termWs.readyState === WebSocket.OPEN) {
+        termWs.send(data);
+      }
+    });
+
+    activeTerminal = {
+      id: terminalId,
+      ws: termWs,
+      xterm: xterm,
+      fitAddon: fitAddon,
+    };
+
+    // Handle window resize
+    window.addEventListener('resize', handleTerminalResize);
+  }
+
+  function disconnectTerminal() {
+    if (!activeTerminal) return;
+
+    window.removeEventListener('resize', handleTerminalResize);
+
+    if (activeTerminal.ws) {
+      try { activeTerminal.ws.close(); } catch (_) { /* noop */ }
+    }
+    if (activeTerminal.xterm) {
+      activeTerminal.xterm.dispose();
+    }
+    dom.terminalContainer.innerHTML = '';
+    activeTerminal = null;
+  }
+
+  function handleTerminalResize() {
+    if (!activeTerminal || !activeTerminal.fitAddon) return;
+    activeTerminal.fitAddon.fit();
+    sendTerminalResize();
+  }
+
+  function sendTerminalResize() {
+    if (!activeTerminal || !activeTerminal.ws || !activeTerminal.fitAddon) return;
+    if (activeTerminal.ws.readyState !== WebSocket.OPEN) return;
+    var dims = activeTerminal.fitAddon.proposeDimensions();
+    if (dims) {
+      activeTerminal.ws.send(JSON.stringify({
+        type: 'resize',
+        cols: dims.cols,
+        rows: dims.rows,
+      }));
+    }
+  }
+
+  // Re-fit terminal when returning to the tab (browser tab switch)
+  document.addEventListener('visibilitychange', function () {
+    if (!document.hidden && activeTerminal && activeTerminal.fitAddon) {
+      setTimeout(function () {
+        activeTerminal.fitAddon.fit();
+        sendTerminalResize();
+        activeTerminal.xterm.refresh(0, activeTerminal.xterm.rows - 1);
+      }, 100);
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // New session
+  // ---------------------------------------------------------------------------
+
+  function createNewSession() {
+    var homeDir = '~';
+    var cwd = window.prompt('WORKING DIRECTORY FOR NEW CLAUDE SESSION:', homeDir);
+    if (!cwd) return;
+
+    fetch('/api/terminal/new', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cwd: cwd }),
+    })
+      .then(function (res) { return res.json(); })
+      .then(function (data) {
+        if (data.terminal_id) {
+          showToast('TERMINAL SPAWNED');
+          sound.newSession();
+          // Auto-select this terminal when it appears in the list
+          pendingTerminalSelect = data.terminal_id;
+        } else {
+          showToast('FAILED TO CREATE TERMINAL');
+          sound.alert();
+        }
+      })
+      .catch(function () {
+        showToast('FAILED TO CREATE TERMINAL');
+        sound.alert();
+      });
+  }
+
+  var pendingTerminalSelect = null;
+
+  // ---------------------------------------------------------------------------
   // Render: header stats
   // ---------------------------------------------------------------------------
 
@@ -230,6 +466,17 @@
       return;
     }
 
+    // Check if a pending terminal should be auto-selected
+    if (pendingTerminalSelect) {
+      var matchingSession = sessions.find(function (s) {
+        return s.terminal_id === pendingTerminalSelect;
+      });
+      if (matchingSession) {
+        selectedSessionId = matchingSession.id;
+        pendingTerminalSelect = null;
+      }
+    }
+
     // Auto-select the first session if none selected or selected no longer exists
     if (!selectedSessionId || !sessions.find(s => s.id === selectedSessionId)) {
       selectedSessionId = sessions[0].id;
@@ -242,12 +489,16 @@
       const agentLine = agentCount > 0
         ? `<div class="session-agents-summary">${agentCount} AGENT${agentCount > 1 ? 'S' : ''}</div>`
         : '';
+      const lcarsBadge = session.terminal_id
+        ? '<span class="lcars-badge">LCARS</span>'
+        : '';
 
       return `
         <div class="lcars-session-item${selected}" data-session-id="${session.id}" style="border-left-color: ${color}">
           <div class="session-name">
             <span class="status-${session.status}" title="${session.status}"></span>
             ${formatProject(session.project)}
+            ${lcarsBadge}
           </div>
           <div class="session-meta">${session.branch || '--'} &middot; ${formatDuration(session.start_time)} &middot; ${formatCost(session.cost_usd)}</div>
           ${agentLine}
@@ -260,9 +511,10 @@
       el.addEventListener('click', () => {
         sound.click();
         selectedSessionId = el.dataset.sessionId;
-        renderSessionList(currentState.sessions);
-        renderSessionDetail(currentState.sessions);
-        renderAgents(currentState.sessions);
+        renderSessionList(mergedSessions);
+        renderSessionDetail(mergedSessions);
+        renderAgents(mergedSessions);
+        updatePanelLayout();
       });
     });
   }
@@ -452,12 +704,54 @@
   // Full render
   // ---------------------------------------------------------------------------
 
+  /**
+   * Merge LCARS terminal entries into sessions list.
+   * Terminals that already match a session (by terminal_id) are skipped.
+   * Unmatched terminals get synthetic session entries so they appear in the list.
+   */
+  function mergeTerminalSessions(sessions, lcarsTerminals) {
+    if (!lcarsTerminals || lcarsTerminals.length === 0) return sessions;
+
+    var matchedTerminalIds = new Set();
+    for (var i = 0; i < sessions.length; i++) {
+      if (sessions[i].terminal_id) {
+        matchedTerminalIds.add(sessions[i].terminal_id);
+      }
+    }
+
+    var merged = sessions.slice();
+    for (var j = 0; j < lcarsTerminals.length; j++) {
+      var t = lcarsTerminals[j];
+      if (matchedTerminalIds.has(t.terminal_id)) continue;
+      // Create a synthetic session entry
+      merged.unshift({
+        id: 'lcars-' + t.terminal_id,
+        slug: 'lcars-terminal',
+        project: t.cwd,
+        cwd: t.cwd,
+        branch: '',
+        version: '',
+        start_time: new Date().toISOString(),
+        last_activity: new Date().toISOString(),
+        status: 'active',
+        message_counts: {},
+        token_counts: {},
+        cost_usd: 0,
+        agents: [],
+        terminal_id: t.terminal_id,
+      });
+    }
+    return merged;
+  }
+
   function render(state) {
-    renderStats(state.sessions || [], state.total_cost_usd || 0);
-    renderSessionList(state.sessions || []);
-    renderSessionDetail(state.sessions || []);
-    renderAgents(state.sessions || []);
+    mergedSessions = mergeTerminalSessions(state.sessions || [], state.lcars_terminals || []);
+    renderStats(mergedSessions, state.total_cost_usd || 0);
+    renderSessionList(mergedSessions);
+    renderSessionDetail(mergedSessions);
+    renderAgents(mergedSessions);
     renderActivityFeed(state.events || []);
+    updatePanelLayout();
   }
 
   // ---------------------------------------------------------------------------
@@ -540,6 +834,11 @@
       if (soundEnabled) {
         sound.click();
       }
+    });
+
+    dom.btnNewSession.addEventListener('click', () => {
+      sound.click();
+      createNewSession();
     });
   }
 

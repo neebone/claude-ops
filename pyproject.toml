@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "claude-ops"
 version = "0.1.0"
 description = "TUI and web dashboard for monitoring Claude Code sessions"
-requires-python = ">=3.10"
+requires-python = ">=3.10,<4.0"
 dependencies = [
     "textual>=3.0",
     "watchfiles>=1.0",
@@ -24,3 +24,8 @@ dev = [
 
 [project.scripts]
 claude-ops = "claude_ops.app:main"
+claude-ops-web = "claude_ops.server:start_web_server"
+
+[tool.poetry.group.dev.dependencies]
+httpx = "^0.28.1"
+

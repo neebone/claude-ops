@@ -37,10 +37,25 @@ body {
   font-family: 'Antonio', sans-serif;
   background: var(--lcars-bg);
   color: var(--lcars-text);
-  text-transform: uppercase;
-  letter-spacing: 1.5px;
   overflow: hidden;
   font-size: 14px;
+}
+
+/* LCARS uppercase styling — applied to UI chrome, NOT terminal */
+.lcars-header-bar,
+.lcars-footer-bar,
+.lcars-sidebar,
+.lcars-section-bar,
+.lcars-session-item,
+.lcars-detail-row,
+.lcars-agent-card,
+.lcars-event-row,
+.lcars-pill,
+.lcars-empty,
+.lcars-toast,
+.lcars-badge {
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
 }
 
 /* --------------------------------------------------------------------------
@@ -334,6 +349,39 @@ body {
 .lcars-bg-blue     { background: var(--lcars-blue); }
 .lcars-bg-gold     { background: var(--lcars-yellow); }
 .lcars-bg-orange   { background: var(--lcars-orange); }
+.lcars-bg-ice      { background: var(--lcars-ice); }
+
+/* --------------------------------------------------------------------------
+   Section Bar Tabs
+   -------------------------------------------------------------------------- */
+.lcars-section-tab {
+  display: inline-flex;
+  padding: 0 14px;
+  height: 100%;
+  align-items: center;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  color: var(--lcars-bg);
+  transition: opacity 0.15s;
+}
+
+.lcars-section-tab.active {
+  opacity: 1;
+}
+
+.lcars-section-tab.inactive {
+  opacity: 0.5;
+}
+
+.lcars-section-tab.inactive:hover {
+  opacity: 0.75;
+}
+
+.lcars-section-tab-spacer {
+  flex: 1;
+}
 
 /* --------------------------------------------------------------------------
    Horizontal Divider Bars
@@ -379,6 +427,9 @@ body {
   font-size: 13px;
   line-height: 1.3;
   word-break: break-all;
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .lcars-session-item .session-meta {
@@ -393,6 +444,20 @@ body {
   margin-top: 3px;
 }
 
+/* LCARS terminal badge */
+.lcars-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: 6px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  color: var(--lcars-bg);
+  background: var(--lcars-ice);
+  flex-shrink: 0;
+}
+
 /* --------------------------------------------------------------------------
    Panels
    -------------------------------------------------------------------------- */
@@ -405,6 +470,14 @@ body {
   min-height: 0;
 }
 
+.lcars-main-top-inner {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  overflow: hidden;
+  min-width: 0;
+}
+
 .lcars-panel {
   display: flex;
   flex-direction: column;
@@ -412,7 +485,26 @@ body {
 }
 
 .lcars-panel-detail { flex: 1; min-width: 0; }
-.lcars-panel-agents { flex: 1; min-width: 0; }
+
+/* Terminal panel takes most space */
+.lcars-panel-terminal { flex: 2; min-width: 0; }
+
+/* Agents panel — always visible, fixed width */
+.lcars-panel-agents {
+  flex: 0 0 340px;
+  overflow: hidden;
+}
+
+.lcars-agents-scroll {
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+}
+
+.lcars-section-label {
+  font-size: 14px;
+  letter-spacing: 2px;
+}
 
 .lcars-panel-activity {
   flex: 0 0 auto;
@@ -432,6 +524,17 @@ body {
 .lcars-value {
   font-family: 'Courier New', monospace;
   color: var(--lcars-ice);
+}
+
+/* --------------------------------------------------------------------------
+   Terminal Container
+   -------------------------------------------------------------------------- */
+.lcars-terminal-container {
+  background: #000000;
+  padding: 4px;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
 }
 
 /* --------------------------------------------------------------------------

@@ -7,7 +7,8 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Antonio:wght@400;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/lcars.css?v=13">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.min.css">
+  <link rel="stylesheet" href="/static/lcars.css?v=17">
 </head>
 <body>
   <div class="lcars-app">
@@ -47,16 +48,31 @@
       </div>
 
       <div class="lcars-main">
-        <div class="lcars-main-top">
-          <div class="lcars-panel lcars-panel-detail">
-            <div class="lcars-section-bar lcars-bg-lavender">Session Detail</div>
-            <div class="lcars-panel-content" id="session-detail">
-              <div class="lcars-empty">Select a session</div>
+        <div class="lcars-main-top" id="main-top">
+          <!-- Detail panel (non-terminal sessions) -->
+          <div class="lcars-main-top-inner" id="detail-view">
+            <div class="lcars-section-bar lcars-bg-lavender" id="detail-section-bar">
+              <span class="lcars-section-label">Detail</span>
+            </div>
+            <div class="lcars-panel lcars-panel-detail" id="panel-detail">
+              <div class="lcars-panel-content" id="session-detail">
+                <div class="lcars-empty">Select a session</div>
+              </div>
             </div>
           </div>
-          <div class="lcars-panel lcars-panel-agents">
-            <div class="lcars-section-bar lcars-bg-purple">Agents</div>
-            <div class="lcars-panel-content" id="agents-panel">
+          <!-- Terminal panel (hidden by default) -->
+          <div class="lcars-panel lcars-panel-terminal" id="panel-terminal" style="display: none;">
+            <div class="lcars-section-bar lcars-bg-ice" id="terminal-section-bar">
+              <span class="lcars-section-label">Terminal</span>
+            </div>
+            <div class="lcars-terminal-container" id="terminal-container"></div>
+          </div>
+          <!-- Agents panel (always visible) -->
+          <div class="lcars-panel lcars-panel-agents" id="panel-agents">
+            <div class="lcars-section-bar lcars-bg-purple" id="agents-section-bar">
+              <span class="lcars-section-label">Agents</span>
+            </div>
+            <div class="lcars-panel-content lcars-agents-scroll" id="agents-panel">
               <div class="lcars-empty">No agents</div>
             </div>
           </div>
@@ -80,6 +96,7 @@
     <!-- Bottom elbow + footer bar -->
     <div class="lcars-elbow lcars-elbow-bl"></div>
     <div class="lcars-footer-bar">
+      <button class="lcars-btn lcars-bg-ice" id="btn-new-session" title="New Session">New Session</button>
       <button class="lcars-btn lcars-bg-lavender" id="btn-refresh" title="Refresh">Refresh</button>
       <button class="lcars-btn lcars-bg-blue" id="btn-sound" title="Toggle sound">Sound: Off</button>
       <div class="lcars-footer-spacer"></div>
@@ -91,6 +108,8 @@
 
   <div class="lcars-toast-container" id="toast-container"></div>
 
-  <script src="/static/lcars.js?v=11"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js"></script>
+  <script src="/static/lcars.js?v=20"></script>
 </body>
 </html>

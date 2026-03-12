@@ -106,8 +106,32 @@ def _parse_timestamp(timestamp_str: str) -> datetime | None:
         return None
 
 
+_session_cache: dict[str, tuple[float, int, Session]] = {}
+
+
 def parse_session_file(path: Path, project: str) -> Session | None:
-    """Parse a session JSONL file into a Session dataclass."""
+    """Parse a session JSONL file into a Session dataclass.
+
+    Uses a cache keyed on (mtime, size) to avoid re-parsing unchanged files.
+    """
+    try:
+        stat = path.stat()
+    except (OSError, FileNotFoundError):
+        return None
+
+    cache_key = str(path)
+    cached = _session_cache.get(cache_key)
+    if cached and cached[0] == stat.st_mtime and cached[1] == stat.st_size:
+        return cached[2]
+
+    result = _parse_session_file_impl(path, project)
+    if result is not None:
+        _session_cache[cache_key] = (stat.st_mtime, stat.st_size, result)
+    return result
+
+
+def _parse_session_file_impl(path: Path, project: str) -> Session | None:
+    """Parse a session JSONL file into a Session dataclass (uncached)."""
     try:
         lines = path.read_text().strip().split("\n")
     except (OSError, FileNotFoundError):
@@ -193,8 +217,29 @@ def parse_session_file(path: Path, project: str) -> Session | None:
     )
 
 
+_agent_cache: dict[str, tuple[float, int, Agent]] = {}
+
+
 def parse_agent_file(path: Path, session_id: str) -> Agent | None:
-    """Parse a subagent JSONL file into an Agent dataclass."""
+    """Parse a subagent JSONL file into an Agent dataclass (cached)."""
+    try:
+        stat = path.stat()
+    except (OSError, FileNotFoundError):
+        return None
+
+    cache_key = str(path)
+    cached = _agent_cache.get(cache_key)
+    if cached and cached[0] == stat.st_mtime and cached[1] == stat.st_size:
+        return cached[2]
+
+    result = _parse_agent_file_impl(path, session_id)
+    if result is not None:
+        _agent_cache[cache_key] = (stat.st_mtime, stat.st_size, result)
+    return result
+
+
+def _parse_agent_file_impl(path: Path, session_id: str) -> Agent | None:
+    """Parse a subagent JSONL file into an Agent dataclass (uncached)."""
     try:
         lines = path.read_text().strip().split("\n")
     except (OSError, FileNotFoundError):
@@ -269,10 +314,32 @@ def parse_agent_file(path: Path, session_id: str) -> Agent | None:
     )
 
 
+_events_cache: dict[str, tuple[float, int, list[ActivityEvent]]] = {}
+
+
 def extract_events(
     path: Path, session_slug: str, is_agent: bool = False,
 ) -> list[ActivityEvent]:
-    """Extract activity events from a JSONL file."""
+    """Extract activity events from a JSONL file (cached)."""
+    try:
+        stat = path.stat()
+    except (OSError, FileNotFoundError):
+        return []
+
+    cache_key = f"{path}:{session_slug}:{is_agent}"
+    cached = _events_cache.get(cache_key)
+    if cached and cached[0] == stat.st_mtime and cached[1] == stat.st_size:
+        return cached[2]
+
+    result = _extract_events_impl(path, session_slug, is_agent)
+    _events_cache[cache_key] = (stat.st_mtime, stat.st_size, result)
+    return result
+
+
+def _extract_events_impl(
+    path: Path, session_slug: str, is_agent: bool = False,
+) -> list[ActivityEvent]:
+    """Extract activity events from a JSONL file (uncached)."""
     events: list[ActivityEvent] = []
     try:
         lines = path.read_text().strip().split("\n")
@@ -375,6 +442,9 @@ def discover_sessions(
                 continue
             if session.last_activity < cutoff:
                 continue
+
+            # Reset agents list to avoid accumulating duplicates on cached sessions
+            session.agents = []
 
             # Look for subagents
             session_subagent_dir = project_dir / session.id / "subagents"
