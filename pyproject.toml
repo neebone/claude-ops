@@ -1,0 +1,22 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "claude-ops"
+version = "0.1.0"
+description = "TUI dashboard for monitoring Claude Code sessions"
+requires-python = ">=3.10"
+dependencies = [
+    "textual>=3.0",
+    "watchfiles>=1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+]
+
+[project.scripts]
+claude-ops = "claude_ops.app:main"
