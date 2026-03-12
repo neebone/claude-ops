@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from enum import Enum
+from pathlib import Path
 
 
 class SessionStatus(Enum):
@@ -95,3 +97,294 @@ class ActivityEvent:
     session_slug: str
     event_type: EventType
     summary: str
+
+
+def _parse_timestamp(timestamp_str: str) -> datetime | None:
+    try:
+        return datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def parse_session_file(path: Path, project: str) -> Session | None:
+    """Parse a session JSONL file into a Session dataclass."""
+    try:
+        lines = path.read_text().strip().split("\n")
+    except (OSError, FileNotFoundError):
+        return None
+
+    if not lines or not lines[0].strip():
+        return None
+
+    session_id = None
+    slug = None
+    cwd = None
+    branch = None
+    version = None
+    start_time = None
+    last_activity = None
+    message_counts = {"user": 0, "assistant": 0}
+    token_counts = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
+    cost_usd = 0.0
+
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+
+        ts = _parse_timestamp(record.get("timestamp", ""))
+
+        if session_id is None:
+            session_id = record.get("sessionId")
+        if slug is None:
+            slug = record.get("slug")
+
+        is_meta = record.get("isMeta", False)
+        if not is_meta and record.get("cwd"):
+            cwd = record["cwd"]
+        if record.get("gitBranch"):
+            branch = record["gitBranch"]
+        if record.get("version"):
+            version = record["version"]
+
+        if ts:
+            if start_time is None:
+                start_time = ts
+            last_activity = ts
+
+        msg_type = record.get("type")
+        if msg_type == "user" and not is_meta:
+            message_counts["user"] += 1
+        elif msg_type == "assistant":
+            message_counts["assistant"] += 1
+            msg = record.get("message", {})
+            usage = msg.get("usage", {})
+            model = msg.get("model", "")
+            in_tok = usage.get("input_tokens", 0)
+            out_tok = usage.get("output_tokens", 0)
+            cache_read = usage.get("cache_read_input_tokens", 0)
+            cache_write = usage.get("cache_creation_input_tokens", 0)
+            token_counts["input"] += in_tok
+            token_counts["output"] += out_tok
+            token_counts["cache_read"] += cache_read
+            token_counts["cache_write"] += cache_write
+            cost_usd += calculate_cost(model, in_tok, out_tok, cache_read, cache_write)
+
+    if session_id is None:
+        return None
+
+    return Session(
+        id=session_id,
+        slug=slug or "",
+        project=project,
+        cwd=cwd or "",
+        branch=branch or "",
+        version=version or "",
+        start_time=start_time or datetime.now(timezone.utc),
+        last_activity=last_activity or datetime.now(timezone.utc),
+        status=SessionStatus.UNKNOWN,
+        message_counts=message_counts,
+        token_counts=token_counts,
+        cost_usd=cost_usd,
+    )
+
+
+def parse_agent_file(path: Path, session_id: str) -> Agent | None:
+    """Parse a subagent JSONL file into an Agent dataclass."""
+    try:
+        lines = path.read_text().strip().split("\n")
+    except (OSError, FileNotFoundError):
+        return None
+
+    if not lines or not lines[0].strip():
+        return None
+
+    agent_id = None
+    model = None
+    task_summary = None
+    start_time = None
+    last_activity = None
+    token_counts = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
+    cost_usd = 0.0
+
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+
+        ts = _parse_timestamp(record.get("timestamp", ""))
+
+        if agent_id is None:
+            agent_id = record.get("agentId")
+
+        if ts:
+            if start_time is None:
+                start_time = ts
+            last_activity = ts
+
+        msg_type = record.get("type")
+        if msg_type == "user" and task_summary is None:
+            content = record.get("message", {}).get("content", "")
+            if isinstance(content, str):
+                task_summary = content[:80]
+
+        if msg_type == "assistant":
+            msg = record.get("message", {})
+            if model is None:
+                model = msg.get("model", "")
+            usage = msg.get("usage", {})
+            in_tok = usage.get("input_tokens", 0)
+            out_tok = usage.get("output_tokens", 0)
+            cache_read = usage.get("cache_read_input_tokens", 0)
+            cache_write = usage.get("cache_creation_input_tokens", 0)
+            token_counts["input"] += in_tok
+            token_counts["output"] += out_tok
+            token_counts["cache_read"] += cache_read
+            token_counts["cache_write"] += cache_write
+            cost_usd += calculate_cost(
+                model or "", in_tok, out_tok, cache_read, cache_write,
+            )
+
+    if agent_id is None:
+        return None
+
+    return Agent(
+        id=agent_id,
+        session_id=session_id,
+        model=model or "",
+        task_summary=task_summary or "",
+        start_time=start_time or datetime.now(timezone.utc),
+        last_activity=last_activity or datetime.now(timezone.utc),
+        status=AgentStatus.ACTIVE,
+        token_counts=token_counts,
+        cost_usd=cost_usd,
+    )
+
+
+def extract_events(
+    path: Path, session_slug: str, is_agent: bool = False,
+) -> list[ActivityEvent]:
+    """Extract activity events from a JSONL file."""
+    events: list[ActivityEvent] = []
+    try:
+        lines = path.read_text().strip().split("\n")
+    except (OSError, FileNotFoundError):
+        return events
+
+    first_agent_message = True
+
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+
+        ts = _parse_timestamp(record.get("timestamp", ""))
+        if not ts:
+            continue
+
+        msg_type = record.get("type")
+
+        # AgentSpawn: first message in an agent file
+        if is_agent and first_agent_message and msg_type == "user":
+            first_agent_message = False
+            agent_id = record.get("agentId", "unknown")
+            model_hint = ""
+            for other_line in lines:
+                try:
+                    other = json.loads(other_line.strip())
+                    if other.get("type") == "assistant":
+                        m = other.get("message", {}).get("model", "")
+                        model_key = _identify_model(m)
+                        model_hint = model_key or m
+                        break
+                except (json.JSONDecodeError, ValueError):
+                    continue
+            events.append(ActivityEvent(
+                timestamp=ts,
+                session_slug=session_slug,
+                event_type=EventType.AGENT_SPAWN,
+                summary=f"Spawned agent-{agent_id} ({model_hint})",
+            ))
+            continue
+
+        if msg_type == "user" and not record.get("isMeta", False):
+            content = record.get("message", {}).get("content", "")
+            if isinstance(content, str) and content.strip():
+                events.append(ActivityEvent(
+                    timestamp=ts,
+                    session_slug=session_slug,
+                    event_type=EventType.MESSAGE,
+                    summary=f"User: \"{content[:80]}\"",
+                ))
+
+        elif msg_type == "assistant":
+            msg = record.get("message", {})
+            content = msg.get("content", [])
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "tool_use":
+                        tool_name = block.get("name", "Unknown")
+                        tool_input = block.get("input", {})
+                        first_val = ""
+                        if isinstance(tool_input, dict):
+                            for v in tool_input.values():
+                                first_val = str(v)[:80]
+                                break
+                        summary = f"{tool_name}({first_val})" if first_val else tool_name
+                        events.append(ActivityEvent(
+                            timestamp=ts,
+                            session_slug=session_slug,
+                            event_type=EventType.TOOL_USE,
+                            summary=summary,
+                        ))
+
+    return events
+
+
+def discover_sessions(
+    projects_dir: Path,
+    max_age_hours: int = 24,
+) -> list[Session]:
+    """Discover all recent sessions from the Claude projects directory."""
+    sessions: list[Session] = []
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=max_age_hours)
+
+    if not projects_dir.exists():
+        return sessions
+
+    for project_dir in projects_dir.iterdir():
+        if not project_dir.is_dir():
+            continue
+        project_name = project_dir.name
+
+        for jsonl_file in project_dir.glob("*.jsonl"):
+            session = parse_session_file(jsonl_file, project=project_name)
+            if session is None:
+                continue
+            if session.last_activity < cutoff:
+                continue
+
+            # Look for subagents
+            session_subagent_dir = project_dir / session.id / "subagents"
+            if session_subagent_dir.is_dir():
+                for agent_file in session_subagent_dir.glob("agent-*.jsonl"):
+                    agent = parse_agent_file(agent_file, session_id=session.id)
+                    if agent is not None:
+                        session.agents.append(agent)
+
+            sessions.append(session)
+
+    sessions.sort(key=lambda s: s.last_activity, reverse=True)
+    return sessions

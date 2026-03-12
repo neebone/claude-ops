@@ -1,8 +1,12 @@
 from datetime import datetime, timezone
+from pathlib import Path
 from claude_ops.parser import (
     Session, Agent, ActivityEvent, EventType, SessionStatus, AgentStatus,
-    calculate_cost, MODEL_PRICING,
+    calculate_cost, MODEL_PRICING, parse_session_file, parse_agent_file,
+    extract_events,
 )
+
+FIXTURES = Path(__file__).parent / "fixtures"
 
 
 def test_session_dataclass_fields():
@@ -105,3 +109,124 @@ def test_calculate_cost_unknown_model_returns_zero():
         cache_write_tokens=0,
     )
     assert cost == 0.0
+
+
+def test_parse_session_file():
+    session = parse_session_file(FIXTURES / "session.jsonl", project="test-project")
+    assert session.id == "test-session-1"
+    assert session.slug == "test-slug"
+    assert session.project == "test-project"
+    assert session.cwd == "/home/user/work"
+    assert session.branch == "feat/fix"
+    assert session.version == "2.1.68"
+    assert session.message_counts["user"] == 2  # isMeta excluded
+    assert session.message_counts["assistant"] == 2
+    assert session.token_counts["input"] == 300  # 100 + 200
+    assert session.token_counts["output"] == 80  # 50 + 30
+    assert session.token_counts["cache_read"] == 60  # 10 + 50
+    assert session.token_counts["cache_write"] == 20  # 20 + 0
+    assert session.cost_usd > 0
+
+
+def test_parse_session_file_cost_uses_per_message_model():
+    session = parse_session_file(FIXTURES / "session.jsonl", project="test-project")
+    expected = calculate_cost("claude-sonnet-4-6", 300, 80, 60, 20)
+    assert abs(session.cost_usd - expected) < 0.0001
+
+
+def test_parse_agent_file():
+    agent = parse_agent_file(
+        FIXTURES / "subagents" / "agent-test123.jsonl",
+        session_id="test-session-1",
+    )
+    assert agent.id == "test123"
+    assert agent.session_id == "test-session-1"
+    assert agent.model == "claude-haiku-4-5-20251001"
+    assert agent.task_summary == "Explore the evaluator code in detail and report back"
+    assert agent.token_counts["input"] == 300
+    assert agent.token_counts["output"] == 100
+
+
+def test_extract_events_from_session():
+    events = extract_events(FIXTURES / "session.jsonl", session_slug="test-slug")
+    tool_events = [e for e in events if e.event_type == EventType.TOOL_USE]
+    msg_events = [e for e in events if e.event_type == EventType.MESSAGE]
+    assert len(tool_events) == 1
+    assert "Read" in tool_events[0].summary
+    assert "/home/user/work/src/main.py" in tool_events[0].summary
+    assert len(msg_events) == 2
+    assert "Hello world" in msg_events[0].summary
+
+
+def test_extract_events_agent_spawn():
+    events = extract_events(
+        FIXTURES / "subagents" / "agent-test123.jsonl",
+        session_slug="test-slug",
+        is_agent=True,
+    )
+    spawn_events = [e for e in events if e.event_type == EventType.AGENT_SPAWN]
+    assert len(spawn_events) == 1
+    assert "test123" in spawn_events[0].summary
+    assert "haiku" in spawn_events[0].summary
+
+
+def test_parse_session_file_nonexistent():
+    session = parse_session_file(Path("/nonexistent.jsonl"), project="test")
+    assert session is None
+
+
+def test_parse_session_file_corrupted(tmp_path):
+    bad_file = tmp_path / "bad.jsonl"
+    bad_file.write_text("not json\n{also bad\n")
+    session = parse_session_file(bad_file, project="test")
+    assert session is None
+
+
+def test_parse_session_file_empty(tmp_path):
+    empty_file = tmp_path / "empty.jsonl"
+    empty_file.write_text("")
+    session = parse_session_file(empty_file, project="test")
+    assert session is None
+
+
+def test_discover_sessions(tmp_path):
+    from claude_ops.parser import discover_sessions
+
+    project_dir = tmp_path / "projects" / "-home-user-work-app"
+    project_dir.mkdir(parents=True)
+
+    session_file = project_dir / "session-1.jsonl"
+    now = datetime.now(timezone.utc).isoformat()
+    session_file.write_text(
+        f'{{"type":"user","sessionId":"session-1","slug":"test","cwd":"/work","gitBranch":"main","version":"2.1.68","timestamp":"{now}","message":{{"role":"user","content":"hi"}}}}\n'
+    )
+
+    subagent_dir = project_dir / "session-1" / "subagents"
+    subagent_dir.mkdir(parents=True)
+    agent_file = subagent_dir / "agent-abc123.jsonl"
+    agent_file.write_text(
+        f'{{"type":"user","sessionId":"session-1","slug":"test","cwd":"/work","gitBranch":"main","version":"2.1.68","timestamp":"{now}","agentId":"abc123","isSidechain":true,"message":{{"role":"user","content":"do stuff"}}}}\n'
+        f'{{"type":"assistant","sessionId":"session-1","slug":"test","cwd":"/work","gitBranch":"main","version":"2.1.68","timestamp":"{now}","agentId":"abc123","isSidechain":true,"message":{{"role":"assistant","model":"claude-haiku-4-5-20251001","content":[{{"type":"text","text":"ok"}}],"usage":{{"input_tokens":10,"output_tokens":5,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}}}}\n'
+    )
+
+    sessions = discover_sessions(tmp_path / "projects")
+    assert len(sessions) == 1
+    assert sessions[0].id == "session-1"
+    assert len(sessions[0].agents) == 1
+    assert sessions[0].agents[0].id == "abc123"
+
+
+def test_discover_sessions_ignores_old(tmp_path):
+    from claude_ops.parser import discover_sessions
+
+    project_dir = tmp_path / "projects" / "-home-user-old"
+    project_dir.mkdir(parents=True)
+
+    session_file = project_dir / "old-session.jsonl"
+    old_time = "2025-01-01T00:00:00.000Z"
+    session_file.write_text(
+        f'{{"type":"user","sessionId":"old","slug":"old","cwd":"/work","gitBranch":"main","version":"2.0.0","timestamp":"{old_time}","message":{{"role":"user","content":"hi"}}}}\n'
+    )
+
+    sessions = discover_sessions(tmp_path / "projects")
+    assert len(sessions) == 0
