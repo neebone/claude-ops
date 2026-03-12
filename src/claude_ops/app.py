@@ -18,7 +18,7 @@ from claude_ops.parser import (
     Session, Agent, ActivityEvent, EventType, SessionStatus, AgentStatus,
     discover_sessions, extract_events,
 )
-from claude_ops.watcher import find_claude_processes, match_session_status
+from claude_ops.watcher import find_claude_processes, match_sessions_status
 
 CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
 PROCESS_CHECK_INTERVAL = 5.0
@@ -238,11 +238,11 @@ class ClaudeOpsApp(App):
     def load_sessions(self) -> None:
         """Load all sessions and update the UI."""
         sessions = discover_sessions(CLAUDE_PROJECTS_DIR)
-        claude_cwds = find_claude_processes()
+        processes = find_claude_processes()
+        match_sessions_status(sessions, processes)
 
+        now = datetime.now(timezone.utc)
         for s in sessions:
-            s.status = match_session_status(s.cwd, s.last_activity, claude_cwds)
-            now = datetime.now(timezone.utc)
             for agent in s.agents:
                 if now - agent.last_activity > timedelta(seconds=30):
                     agent.status = AgentStatus.IDLE
@@ -285,10 +285,11 @@ class ClaudeOpsApp(App):
 
     def refresh_statuses(self) -> None:
         """Refresh process-based status detection."""
-        claude_cwds = find_claude_processes()
+        processes = find_claude_processes()
+        match_sessions_status(self.sessions, processes)
+
         now = datetime.now(timezone.utc)
         for s in self.sessions:
-            s.status = match_session_status(s.cwd, s.last_activity, claude_cwds)
             for agent in s.agents:
                 if now - agent.last_activity > timedelta(seconds=30):
                     agent.status = AgentStatus.IDLE

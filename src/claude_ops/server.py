@@ -28,7 +28,7 @@ from claude_ops.parser import (
     discover_sessions,
     extract_events,
 )
-from claude_ops.watcher import find_claude_processes, match_session_status
+from claude_ops.watcher import find_claude_processes, match_sessions_status
 
 CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
 STATIC_DIR = Path(__file__).parent / "static"
@@ -119,11 +119,12 @@ def _find_session_file(session: Session) -> Path | None:
 def _load_state() -> dict[str, Any]:
     """Load all sessions and activity events, return as JSON-serializable dict."""
     sessions = discover_sessions(CLAUDE_PROJECTS_DIR)
-    claude_cwds = find_claude_processes()
+    processes = find_claude_processes()
     now = datetime.now(timezone.utc)
 
+    match_sessions_status(sessions, processes)
+
     for s in sessions:
-        s.status = match_session_status(s.cwd, s.last_activity, claude_cwds)
         for agent in s.agents:
             if now - agent.last_activity > timedelta(seconds=30):
                 agent.status = AgentStatus.IDLE
