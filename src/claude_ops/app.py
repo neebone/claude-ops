@@ -358,8 +358,27 @@ class ClaudeOpsApp(App):
 
 
 def main() -> None:
-    app = ClaudeOpsApp()
-    app.run()
+    """Entry point for claude-ops CLI."""
+    import sys
+
+    if "--web" in sys.argv:
+        try:
+            from claude_ops.server import start_web_server
+        except ImportError:
+            print(
+                "Web dependencies not installed. "
+                "Install with: pip install claude-ops[web]"
+            )
+            sys.exit(1)
+        port = 1701
+        # Check for --port flag
+        for i, arg in enumerate(sys.argv):
+            if arg == "--port" and i + 1 < len(sys.argv):
+                port = int(sys.argv[i + 1])
+        start_web_server(port=port)
+    else:
+        app = ClaudeOpsApp()
+        app.run()
 
 
 if __name__ == "__main__":

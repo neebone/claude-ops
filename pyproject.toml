@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "claude-ops"
 version = "0.1.0"
-description = "TUI dashboard for monitoring Claude Code sessions"
+description = "TUI and web dashboard for monitoring Claude Code sessions"
 requires-python = ">=3.10"
 dependencies = [
     "textual>=3.0",
@@ -13,6 +13,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+web = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.34",
+]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",

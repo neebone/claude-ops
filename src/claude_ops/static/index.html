@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Claude Ops</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Antonio:wght@400;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/lcars.css?v=13">
+</head>
+<body>
+  <div class="lcars-app">
+
+    <!-- Top elbow + header bar -->
+    <div class="lcars-elbow lcars-elbow-tl"></div>
+    <div class="lcars-header-bar">
+      <div class="lcars-header-stats" id="header-stats">
+        <span class="lcars-pill lcars-pill-green" id="stat-active">0 active</span>
+        <span class="lcars-pill lcars-pill-yellow" id="stat-idle">0 idle</span>
+        <span class="lcars-pill lcars-pill-purple" id="stat-agents">0 agents</span>
+        <span class="lcars-pill lcars-pill-blue" id="stat-cost">$0.00</span>
+      </div>
+      <span class="lcars-title">Claude Ops</span>
+      <div class="lcars-header-cap"></div>
+    </div>
+
+    <!-- Sidebar blocks + main content -->
+    <div class="lcars-sidebar">
+      <div class="lcars-sidebar-block lcars-sidebar-block-md lcars-bg-lavender">
+        <span class="lcars-sidebar-label">Sessions</span>
+      </div>
+      <div class="lcars-sidebar-block lcars-sidebar-block-sm lcars-bg-blue"></div>
+      <div class="lcars-sidebar-block lcars-sidebar-block-fill lcars-bg-peach"></div>
+      <div class="lcars-sidebar-block lcars-sidebar-block-md lcars-bg-blue">
+        <span class="lcars-sidebar-label">Activity</span>
+      </div>
+      <div class="lcars-sidebar-block lcars-sidebar-block-sm lcars-bg-lavender"></div>
+    </div>
+
+    <div class="lcars-body">
+      <div class="lcars-sidebar-content">
+        <div class="lcars-section-bar lcars-bg-peach">Sessions</div>
+        <div class="lcars-session-list" id="session-list">
+          <div class="lcars-empty">No sessions</div>
+        </div>
+      </div>
+
+      <div class="lcars-main">
+        <div class="lcars-main-top">
+          <div class="lcars-panel lcars-panel-detail">
+            <div class="lcars-section-bar lcars-bg-lavender">Session Detail</div>
+            <div class="lcars-panel-content" id="session-detail">
+              <div class="lcars-empty">Select a session</div>
+            </div>
+          </div>
+          <div class="lcars-panel lcars-panel-agents">
+            <div class="lcars-section-bar lcars-bg-purple">Agents</div>
+            <div class="lcars-panel-content" id="agents-panel">
+              <div class="lcars-empty">No agents</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="lcars-divider">
+          <div class="lcars-divider-segment lcars-bg-lavender"></div>
+          <div class="lcars-divider-segment lcars-divider-wide lcars-bg-blue"></div>
+          <div class="lcars-divider-segment lcars-bg-peach"></div>
+        </div>
+
+        <div class="lcars-panel lcars-panel-activity">
+          <div class="lcars-section-bar lcars-bg-blue">Activity</div>
+          <div class="lcars-panel-content lcars-activity-scroll" id="activity-feed">
+            <div class="lcars-empty">No activity</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Bottom elbow + footer bar -->
+    <div class="lcars-elbow lcars-elbow-bl"></div>
+    <div class="lcars-footer-bar">
+      <button class="lcars-btn lcars-bg-lavender" id="btn-refresh" title="Refresh">Refresh</button>
+      <button class="lcars-btn lcars-bg-blue" id="btn-sound" title="Toggle sound">Sound: Off</button>
+      <div class="lcars-footer-spacer"></div>
+      <span class="lcars-clock" id="clock"></span>
+      <div class="lcars-footer-cap"></div>
+    </div>
+
+  </div>
+
+  <div class="lcars-toast-container" id="toast-container"></div>
+
+  <script src="/static/lcars.js?v=11"></script>
+</body>
+</html>
