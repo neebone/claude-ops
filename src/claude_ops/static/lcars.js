@@ -265,9 +265,10 @@
     var isTerminal = isTerminalSession(session);
 
     if (isTerminal) {
+      var wasHidden = dom.panelTerminal.style.display === 'none';
       dom.detailView.style.display = 'none';
       dom.panelTerminal.style.display = 'flex';
-      connectTerminal(session.terminal_id);
+      connectTerminal(session.terminal_id, wasHidden);
     } else {
       dom.detailView.style.display = 'flex';
       dom.panelTerminal.style.display = 'none';
@@ -280,24 +281,24 @@
   // Terminal management
   // ---------------------------------------------------------------------------
 
-  function connectTerminal(terminalId) {
-    // Already connected to this terminal — re-fit and focus (buffer preserved)
+  function connectTerminal(terminalId, wasHidden) {
+    // Already connected to this terminal
     if (activeTerminal && activeTerminal.id === terminalId) {
-      // Use double-rAF to ensure browser has computed layout after display:flex
-      requestAnimationFrame(function () {
+      // Only re-fit/refresh if the panel was just made visible again
+      if (wasHidden) {
         requestAnimationFrame(function () {
-          if (!activeTerminal || !activeTerminal.fitAddon) return;
-          // Clear canvas texture cache so glyphs are redrawn
-          if (activeTerminal.xterm.clearTextureAtlas) {
-            activeTerminal.xterm.clearTextureAtlas();
-          }
-          activeTerminal.fitAddon.fit();
-          // Force SIGWINCH by sending resize — makes the PTY program redraw
-          sendTerminalResize();
-          activeTerminal.xterm.refresh(0, activeTerminal.xterm.rows - 1);
-          activeTerminal.xterm.focus();
+          requestAnimationFrame(function () {
+            if (!activeTerminal || !activeTerminal.fitAddon) return;
+            if (activeTerminal.xterm.clearTextureAtlas) {
+              activeTerminal.xterm.clearTextureAtlas();
+            }
+            activeTerminal.fitAddon.fit();
+            sendTerminalResize();
+            activeTerminal.xterm.refresh(0, activeTerminal.xterm.rows - 1);
+            activeTerminal.xterm.focus();
+          });
         });
-      });
+      }
       return;
     }
 
