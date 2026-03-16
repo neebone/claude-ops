@@ -316,9 +316,11 @@
     var isTerminal = isTerminalSession(session);
 
     // If we have an active terminal connection, keep showing it even if the
-    // session briefly loses its terminal_id (e.g. during startup status flicker)
+    // selected session briefly loses its terminal_id (process not yet detected,
+    // or ps aux hiccup). This prevents the panel from flipping to detail view
+    // and back, which the user sees as a "tab jump".
     var hasActiveTerminal = activeTerminalId && terminals.has(activeTerminalId);
-    if (!isTerminal && hasActiveTerminal && pendingTerminalSelect) {
+    if (!isTerminal && hasActiveTerminal) {
       isTerminal = true;
     }
 
@@ -331,9 +333,7 @@
     } else {
       dom.detailView.style.display = 'flex';
       dom.panelTerminal.style.display = 'none';
-      // Don't disconnect — keep terminal alive so buffer is preserved
     }
-    // Agents panel is always visible — no toggle needed
   }
 
   // ---------------------------------------------------------------------------
