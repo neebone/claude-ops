@@ -182,6 +182,39 @@ def test_load_state_includes_terminals(mock_procs, mock_sessions):
     assert state["lcars_terminals"][0]["cwd"] == "/home/user"
 
 
+@patch("claude_ops.server.discover_sessions", return_value=[])
+@patch("claude_ops.server.find_claude_processes", return_value={})
+def test_load_state_with_snapshot(mock_procs, mock_sessions):
+    """_load_state should use the terminals_snapshot parameter (thread-safe)."""
+    from claude_ops.server import _load_state
+
+    # Global lcars_terminals is empty, but snapshot has a terminal
+    snapshot = {"t-snap": {"pid": 200, "fd": 7, "cwd": "/snap/dir"}}
+
+    state = _load_state(terminals_snapshot=snapshot)
+    assert len(state["lcars_terminals"]) == 1
+    assert state["lcars_terminals"][0]["terminal_id"] == "t-snap"
+    assert state["lcars_terminals"][0]["cwd"] == "/snap/dir"
+
+    # Global should still be empty
+    assert len(lcars_terminals) == 0
+
+
+@patch("claude_ops.server.discover_sessions", return_value=[])
+@patch("claude_ops.server.find_claude_processes", return_value={})
+def test_load_state_snapshot_ignores_global(mock_procs, mock_sessions):
+    """When snapshot is provided, global lcars_terminals should be ignored."""
+    from claude_ops.server import _load_state
+
+    lcars_terminals["global-t"] = {"pid": 300, "fd": 8, "cwd": "/global"}
+    snapshot = {"snap-t": {"pid": 400, "fd": 9, "cwd": "/snap"}}
+
+    state = _load_state(terminals_snapshot=snapshot)
+    terminal_ids = [t["terminal_id"] for t in state["lcars_terminals"]]
+    assert "snap-t" in terminal_ids
+    assert "global-t" not in terminal_ids
+
+
 # ---------------------------------------------------------------------------
 # Session Control
 # ---------------------------------------------------------------------------
@@ -399,3 +432,66 @@ class TestBuildTerminalMatches:
 
         assert result.get("sa") == "term-a"
         assert result.get("sb") == "term-b"
+
+
+# ---------------------------------------------------------------------------
+# Event type format contract (JS depends on these exact values)
+# ---------------------------------------------------------------------------
+
+
+def test_event_type_values_match_js_contract():
+    """EventType enum values must match what the JS frontend expects.
+
+    The JS timeline uses exact string comparison (e.g. === 'ToolUse'),
+    so if enum values change, the timeline breaks silently (everything grey).
+    """
+    from claude_ops.parser import EventType
+
+    # JS expects these exact strings from _event_to_dict
+    assert EventType.TOOL_USE.value == "ToolUse"
+    assert EventType.MESSAGE.value == "Message"
+
+
+def test_event_to_dict_preserves_event_type():
+    """_event_to_dict should serialize event_type as the enum value string."""
+    from datetime import datetime, timezone
+    from claude_ops.parser import EventType, ActivityEvent
+    from claude_ops.server import _event_to_dict
+
+    event = ActivityEvent(
+        timestamp=datetime.now(timezone.utc),
+        session_slug="test",
+        event_type=EventType.TOOL_USE,
+        summary="Read(file.py)",
+    )
+    result = _event_to_dict(event)
+    # Must be "ToolUse", not "tool_use" or "TOOL_USE"
+    assert result["event_type"] == "ToolUse"
+
+
+# ---------------------------------------------------------------------------
+# _build_terminal_matches with explicit terminals parameter
+# ---------------------------------------------------------------------------
+
+
+class TestBuildTerminalMatchesWithSnapshot:
+    """Tests for _build_terminal_matches using the terminals parameter."""
+
+    def test_uses_terminals_param_not_global(self):
+        """Should use the provided terminals dict, not the global."""
+        # Global has a terminal, but we pass a different snapshot
+        lcars_terminals["global-t"] = {"pid": 100, "fd": 5, "cwd": "/global"}
+        snapshot = {"snap-t": {"pid": 200, "fd": 6, "cwd": "/snap/dir"}}
+
+        sessions = [_make_session("s1", "/snap/dir")]
+        with patch("claude_ops.server.os.path.realpath", side_effect=lambda x: x):
+            result = _build_terminal_matches(sessions, None, terminals=snapshot)
+
+        assert result.get("s1") == "snap-t"
+        assert "global-t" not in result.values()
+
+    def test_empty_snapshot_returns_empty(self):
+        """Should return empty dict when snapshot is empty even if global has entries."""
+        lcars_terminals["t1"] = {"pid": 100, "fd": 5, "cwd": "/home"}
+        result = _build_terminal_matches([], None, terminals={})
+        assert result == {}

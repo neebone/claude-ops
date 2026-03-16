@@ -1245,7 +1245,7 @@
     if (!events || events.length === 0) return 'IDLE';
     // Look at last 5 tool_use events to determine current phase
     var toolEvents = events.filter(function(e) {
-      return (e.event_type || '').toLowerCase() === 'tool_use';
+      return (e.event_type || '') === 'ToolUse';
     }).slice(-5);
     if (toolEvents.length === 0) return 'IDLE';
 

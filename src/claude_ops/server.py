@@ -84,6 +84,7 @@ def _get_pid_cwd(pid: int) -> str | None:
 def _build_terminal_matches(
     sessions: list[Session],
     all_pids: list[int] | None = None,
+    terminals: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, str]:
     """Build a map of session_id -> terminal_id using two-pass matching.
 
@@ -97,8 +98,12 @@ def _build_terminal_matches(
 
     Two-pass ensures that PID ancestry always wins, preventing older sessions
     in the same cwd from stealing a terminal match.
+
+    Args:
+        terminals: Snapshot of lcars_terminals dict. Uses the global if None.
     """
-    if not lcars_terminals:
+    terms = terminals if terminals is not None else lcars_terminals
+    if not terms:
         return {}
 
     session_terminal_map: dict[str, str] = {}  # session.id -> terminal_id
@@ -109,7 +114,7 @@ def _build_terminal_matches(
     # For each Claude PID, walk its ancestor chain and check against terminal PIDs
     terminal_pids = {
         tinfo["pid"]: tid
-        for tid, tinfo in lcars_terminals.items()
+        for tid, tinfo in terms.items()
         if tinfo.get("pid")
     }
 
@@ -145,7 +150,7 @@ def _build_terminal_matches(
         if not s.cwd:
             continue
         resolved_cwd = os.path.realpath(s.cwd)
-        for tid, tinfo in lcars_terminals.items():
+        for tid, tinfo in terms.items():
             if tid in matched_terminal_ids:
                 continue
             if tinfo.get("pid") and os.path.realpath(tinfo["cwd"]) == resolved_cwd:
@@ -236,8 +241,16 @@ def _find_session_file(session: Session) -> Path | None:
     return None
 
 
-def _load_state() -> dict[str, Any]:
-    """Load all sessions and activity events, return as JSON-serializable dict."""
+def _load_state(terminals_snapshot: dict | None = None) -> dict[str, Any]:
+    """Load all sessions and activity events, return as JSON-serializable dict.
+
+    Args:
+        terminals_snapshot: A snapshot of lcars_terminals taken on the async
+            thread before dispatching to the executor.  This avoids iterating
+            the live dict from a worker thread while async handlers mutate it.
+    """
+    if terminals_snapshot is None:
+        terminals_snapshot = dict(lcars_terminals)
     sessions = discover_sessions(CLAUDE_PROJECTS_DIR)
     processes = find_claude_processes()
     now = datetime.now(timezone.utc)
@@ -316,12 +329,12 @@ def _load_state() -> dict[str, Any]:
     # Build LCARS terminal info for the state payload
     terminal_info = [
         {"terminal_id": tid, "cwd": tinfo["cwd"], "pid": tinfo["pid"]}
-        for tid, tinfo in lcars_terminals.items()
+        for tid, tinfo in terminals_snapshot.items()
     ]
 
     # Match terminals to sessions (PID ancestry first, then cwd fallback)
     all_pids = [p.pid for p in processes] if processes else None
-    terminal_matches = _build_terminal_matches(sessions, all_pids)
+    terminal_matches = _build_terminal_matches(sessions, all_pids, terminals_snapshot)
 
     session_dicts = []
     for s in sessions:
@@ -356,7 +369,12 @@ async def websocket_endpoint(websocket: WebSocket):
     try:
         while True:
             try:
-                state = _load_state()
+                # Snapshot terminals on the async thread (thread-safe),
+                # then run the blocking I/O in an executor thread.
+                snap = dict(lcars_terminals)
+                state = await asyncio.get_event_loop().run_in_executor(
+                    None, _load_state, snap,
+                )
             except Exception:
                 await asyncio.sleep(WATCH_INTERVAL)
                 continue
