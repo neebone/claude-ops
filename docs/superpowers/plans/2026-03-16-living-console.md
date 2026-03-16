@@ -675,6 +675,22 @@ Add new variables to `:root`:
 --lcars-dark: #1A1A2E;
 ```
 
+Add ambient glow to LCARS frame elements (elbows, sidebar, header):
+```css
+.lcars-elbow-tl,
+.lcars-elbow-bl {
+  box-shadow: 4px 0 12px rgba(240, 160, 122, 0.15);
+}
+
+.lcars-sidebar-block {
+  box-shadow: 4px 0 8px rgba(0, 0, 0, 0.3);
+}
+
+.lcars-header-bar {
+  box-shadow: 0 2px 8px rgba(240, 160, 122, 0.1);
+}
+```
+
 Update `.lcars-detail-value` and `.lcars-value` to use bright white:
 ```css
 .lcars-detail-value {
@@ -747,11 +763,17 @@ Add to `lcars.css`:
 .lcars-section-bar::after {
   content: '';
   position: absolute;
-  top: 50%;
+  top: 0;
   left: -100%;
   width: 60%;
-  height: 2px;
-  background: linear-gradient(90deg, transparent, rgba(0,0,0,0.3), transparent);
+  height: 100%;
+  background: linear-gradient(90deg,
+    transparent 0%,
+    rgba(255,255,255,0.0) 30%,
+    rgba(255,255,255,0.6) 50%,
+    rgba(255,255,255,0.0) 70%,
+    transparent 100%);
+  opacity: 0.4;
   animation: dataStream 3s linear infinite;
   animation-play-state: var(--stream-state, paused);
 }
@@ -800,9 +822,9 @@ Add to `lcars.css`:
   background: repeating-linear-gradient(
     0deg,
     transparent,
-    transparent 2px,
-    rgba(0, 0, 0, 0.03) 2px,
-    rgba(0, 0, 0, 0.03) 4px
+    transparent 1px,
+    rgba(0, 0, 0, 0.08) 1px,
+    rgba(0, 0, 0, 0.08) 2px
   );
   pointer-events: none;
   z-index: 100;
@@ -947,6 +969,16 @@ function drawWaveform(timestamp) {
   const maxAmp = midY * 0.8;
   const t = timestamp / 1000;
 
+  // Draw subtle grid (Trek-style sensor display)
+  ctx.strokeStyle = 'rgba(144, 160, 208, 0.08)';
+  ctx.lineWidth = 0.5;
+  for (let gy = 0; gy < h; gy += 20) {
+    ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(w, gy); ctx.stroke();
+  }
+  for (let gx = 0; gx < w; gx += 40) {
+    ctx.beginPath(); ctx.moveTo(gx, 0); ctx.lineTo(gx, h); ctx.stroke();
+  }
+
   // Draw waveform
   const gradient = ctx.createLinearGradient(0, midY - maxAmp, 0, midY + maxAmp);
   gradient.addColorStop(0, '#F0A07A');
@@ -970,6 +1002,14 @@ function drawWaveform(timestamp) {
     else ctx.lineTo(x, y);
   }
   ctx.stroke();
+
+  // Glow pass — redraw with shadow for luminous effect
+  ctx.save();
+  ctx.shadowColor = '#FFCC99';
+  ctx.shadowBlur = amp > 0.01 ? 8 : 3;
+  ctx.stroke();
+  ctx.restore();
+
   ctx.globalAlpha = 1;
 }
 ```
@@ -1050,17 +1090,18 @@ Insert between `main-top` and the divider in `index.html`:
 
 .lcars-resource-gauge .gauge-bar {
   flex: 1;
-  height: 8px;
-  background: rgba(255, 255, 255, 0.08);
-  border-radius: 4px;
+  height: 10px;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 0 5px 5px 0;
   overflow: hidden;
   min-width: 40px;
 }
 
 .lcars-resource-gauge .gauge-fill {
   height: 100%;
-  border-radius: 4px;
-  transition: width 300ms ease, background 300ms ease;
+  border-radius: 0 5px 5px 0;
+  transition: width 500ms ease-out, background 500ms ease;
+  box-shadow: 0 0 4px currentColor;
 }
 
 .lcars-resource-gauge .gauge-value {
@@ -1076,35 +1117,27 @@ Insert between `main-top` and the divider in `index.html`:
 - [ ] **Step 3: Add active/completed session split CSS**
 
 ```css
-/* Active/Completed session split */
+/* Active/Completed session split — LCARS bar divider */
 .lcars-session-divider {
+  background: var(--lcars-dim);
+  height: 20px;
+  border-radius: 0 10px 10px 0;
+  margin: 4px 0;
+  padding: 0 12px;
   display: flex;
   align-items: center;
-  padding: 4px 12px;
-  cursor: pointer;
   font-size: 10px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 1.5px;
-  color: var(--lcars-dim);
-  gap: 6px;
+  color: var(--lcars-bg);
+  cursor: pointer;
   flex-shrink: 0;
+  transition: background 0.15s;
 }
 
-.lcars-session-divider::before {
-  content: '';
-  flex: 1;
-  height: 2px;
-  background: var(--lcars-dim);
-  opacity: 0.3;
-}
-
-.lcars-session-divider::after {
-  content: '';
-  flex: 1;
-  height: 2px;
-  background: var(--lcars-dim);
-  opacity: 0.3;
+.lcars-session-divider:hover {
+  background: var(--lcars-lavender);
 }
 
 .lcars-completed-zone {
@@ -1415,9 +1448,21 @@ git commit -m "feat(lcars): resource strip, agent tree, session split, token sta
 }
 
 .lcars-action-btn:hover { filter: brightness(1.3); }
-.lcars-action-btn.kill { background: var(--lcars-red); color: var(--lcars-dark); }
-.lcars-action-btn.copy-path { background: var(--lcars-blue); color: var(--lcars-dark); }
-.lcars-action-btn.copy-id { background: var(--lcars-lavender); color: var(--lcars-dark); }
+
+.lcars-action-btn.kill {
+  background: var(--lcars-red);
+  color: #FFFFFF;
+  font-size: 10px;
+  padding: 3px 10px;
+}
+
+.lcars-action-btn.copy-path,
+.lcars-action-btn.copy-id {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--lcars-text);
+  font-size: 9px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+}
 ```
 
 - [ ] **Step 2: Add action buttons to session card rendering**
@@ -1580,22 +1625,29 @@ Add CSS:
 }
 
 .lcars-shortcut-panel {
-  width: 320px;
-  border: 2px solid var(--lcars-lavender);
-  border-radius: 8px;
+  width: 360px;
+  background: var(--lcars-bg);
+  border: none;
+  border-radius: 0;
   overflow: hidden;
 }
 
+.lcars-shortcut-panel .lcars-section-bar {
+  border-radius: 0 24px 0 0;
+}
+
 .lcars-shortcut-list {
-  padding: 16px 20px;
+  padding: 20px 24px;
   font-size: 13px;
   line-height: 2;
+  border-left: 4px solid var(--lcars-lavender);
+  margin-left: 8px;
 }
 
 .lcars-shortcut-list kbd {
   display: inline-block;
-  padding: 1px 6px;
-  border-radius: 4px;
+  padding: 1px 8px;
+  border-radius: 0 6px 6px 0;
   background: var(--lcars-lavender);
   color: var(--lcars-dark);
   font-family: 'Courier New', monospace;
