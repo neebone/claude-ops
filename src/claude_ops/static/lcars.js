@@ -56,6 +56,7 @@
   let completedCollapsed = true;
   let renderedEventKeys = new Set();
   let dashboardStartTime = Date.now();
+  let lastStateKey = null;
 
   // Terminal state
   var terminals = new Map();     // id -> { id, ws, xterm, fitAddon, container }
@@ -354,12 +355,18 @@
       t.container.style.display = id === terminalId ? 'flex' : 'none';
     });
     activeTerminalId = terminalId;
-    var t = terminals.get(terminalId);
-    if (t) {
-      t.fitAddon.fit();
-      t.xterm.focus();
-    }
     renderTerminalTabs();
+
+    // Defer fit until layout is complete — container needs dimensions first
+    requestAnimationFrame(function() {
+      requestAnimationFrame(function() {
+        var t = terminals.get(terminalId);
+        if (!t) return;
+        t.fitAddon.fit();
+        sendTerminalResize();
+        t.xterm.focus();
+      });
+    });
   }
 
   function closeTerminal(terminalId) {
@@ -620,15 +627,28 @@
   // Render: session detail
   // ---------------------------------------------------------------------------
 
+  var lastDetailKey = null;
+
   function renderSessionDetail(sessions) {
     const session = sessions.find(s => s.id === selectedSessionId);
     if (!session) {
-      dom.sessionDetail.innerHTML = '<div class="lcars-empty">SELECT A SESSION</div>';
+      if (lastDetailKey !== 'empty') {
+        dom.sessionDetail.innerHTML = '<div class="lcars-empty">SELECT A SESSION</div>';
+        lastDetailKey = 'empty';
+        lastSessionEventsKey = null;
+      }
       return;
     }
 
     const mc = session.message_counts || {};
     const tc = session.token_counts || {};
+
+    // Skip re-render if nothing changed
+    var detailKey = session.id + ':' + session.status + ':' + (mc.user || 0) + ':' + (mc.assistant || 0)
+      + ':' + (tc.input || 0) + ':' + (tc.output || 0) + ':' + session.cost_usd;
+    if (detailKey === lastDetailKey) return;
+    lastDetailKey = detailKey;
+    lastSessionEventsKey = null; // reset so events re-render with detail
 
     const rows = [
       ['STATUS', `<span class="status-${session.status}"></span> ${(session.status || '').toUpperCase()}`],
@@ -670,7 +690,7 @@
         + '<div class="gauge-bar">'
         + '<div class="gauge-fill" style="width: ' + cpuWidth + '%; background: ' + cpuColor + '"></div>'
         + '</div>'
-        + '<span class="gauge-value">' + stats.cpu_pct.toFixed(0) + '% ' + stats.rss_mb.toFixed(0) + 'MB</span>'
+        + '<span class="gauge-value">CPU ' + stats.cpu_pct.toFixed(0) + '% / ' + stats.rss_mb.toFixed(0) + ' MB</span>'
         + '</div>';
     }).join('');
   }
@@ -712,9 +732,11 @@
 
   function renderAgentTree(agentTrees, selectedId) {
     if (!dom.agentsPanel) return;
-    var nodes = agentTrees ? agentTrees[selectedId] : null;
+    var allNodes = agentTrees ? agentTrees[selectedId] : null;
+    // Filter to active/idle agents only
+    var nodes = allNodes ? allNodes.filter(function(n) { return n.agent.status === 'active' || n.agent.status === 'idle'; }) : [];
     if (!nodes || nodes.length === 0) {
-      // Fall back to flat renderAgents if no tree data
+      dom.agentsPanel.innerHTML = '<div class="lcars-empty">NO AGENTS</div>';
       return;
     }
 
@@ -744,18 +766,27 @@
   // Render: session events
   // ---------------------------------------------------------------------------
 
+  var lastSessionEventsKey = null;
+
   function renderSessionEvents(sessionEvents, selectedId) {
     if (!dom.sessionDetail) return;
     var events = sessionEvents ? sessionEvents[selectedId] : null;
     if (!events || events.length === 0) return;
 
-    // Append event stream section to session detail
+    // Skip re-render if events haven't changed
+    var eventsKey = selectedId + ':' + events.length + ':' + (events.length > 0 ? events[events.length - 1].timestamp : '');
+    if (eventsKey === lastSessionEventsKey) return;
+    lastSessionEventsKey = eventsKey;
+
+    // Show latest first (descending)
+    var sorted = events.slice().reverse();
+
     var streamHtml = '<div style="margin: 12px 0 8px; border-top: 1px solid rgba(255,255,255,0.08);"></div>'
       + '<div style="font-size: 11px; color: var(--lcars-lavender); text-transform: uppercase; letter-spacing: 1.5px; margin-bottom: 6px;">Recent Activity</div>'
       + '<div class="lcars-session-events">';
 
-    for (var i = 0; i < events.length; i++) {
-      var evt = events[i];
+    for (var i = 0; i < sorted.length; i++) {
+      var evt = sorted[i];
       streamHtml += '<div class="lcars-event-row lcars-no-anim" style="padding: 2px 0; font-size: 11px;">'
         + '<span class="event-time">' + formatTime(evt.timestamp) + '</span> '
         + '<span class="event-type" style="min-width: 60px; display: inline-block;">' + (evt.event_type || '--') + '</span> '
@@ -941,7 +972,6 @@
     renderSessionList(mergedSessions);
     renderSessionDetail(mergedSessions);
     renderSessionEvents(state.session_events, selectedSessionId);
-    renderAgents(mergedSessions);
     renderAgentTree(state.agent_trees, selectedSessionId);
     renderActivityFeed(state.events || []);
     renderResourceStrip(state.resources);
@@ -985,7 +1015,13 @@
       currentState = msg;
 
       detectChanges(previousState, currentState);
-      render(currentState);
+
+      // Skip re-render if data hasn't changed (prevents DOM flicker)
+      var stateKey = JSON.stringify(msg.sessions) + JSON.stringify(msg.events);
+      if (stateKey !== lastStateKey) {
+        lastStateKey = stateKey;
+        render(currentState);
+      }
     });
 
     ws.addEventListener('close', () => {
@@ -1047,14 +1083,6 @@
       }
     });
 
-    if (dom.btnScanlines) {
-      dom.btnScanlines.addEventListener('click', () => {
-        sound.click();
-        var body = document.querySelector('.lcars-body');
-        body.classList.toggle('scanlines');
-        dom.btnScanlines.textContent = body.classList.contains('scanlines') ? 'SCAN: ON' : 'SCAN: OFF';
-      });
-    }
 
     dom.btnNewSession.addEventListener('click', () => {
       sound.click();
@@ -1063,110 +1091,254 @@
   }
 
   // ---------------------------------------------------------------------------
-  // Processing Waveform Visualisation
+  // Activity Timeline & Tool Phase Visualisation
   // ---------------------------------------------------------------------------
 
-  let waveformCanvas = null;
-  let waveformCtx = null;
-  let waveformAnimId = null;
-  let waveformData = { amplitude: 0, frequency: 1 };
+  let timelineCanvas = null;
+  let timelineCtx = null;
+  let timelineAnimId = null;
   let lastFrameTime = 0;
-  const TARGET_FRAME_MS = 1000 / 30; // 30fps
+  const TARGET_FRAME_MS = 1000 / 30;
 
-  function initWaveform() {
-    waveformCanvas = document.getElementById('waveform-canvas');
-    if (!waveformCanvas) return;
-    waveformCtx = waveformCanvas.getContext('2d');
-    resizeWaveform();
-    window.addEventListener('resize', resizeWaveform);
-    waveformAnimId = requestAnimationFrame(drawWaveform);
+  // Rolling history: array of { timestamp, sessions: [{slug, status, color, phase}] }
+  var timelineHistory = [];
+  var TIMELINE_WINDOW_MS = 5 * 60 * 1000; // 5 minute window
+
+  // Tool phase classification
+  var PHASE_COLORS = {
+    RESEARCH: '#90A0D0',  // blue — reads, greps, searches
+    BUILD:    '#FFCC99',  // gold — edits, writes
+    TEST:     '#80D090',  // green — bash/test runs
+    IDLE:     '#707898',  // dim — no recent tools
+  };
+
+  function classifyPhase(events) {
+    if (!events || events.length === 0) return 'IDLE';
+    // Look at last 5 events to determine current phase
+    var recent = events.slice(-5);
+    var types = recent.map(function(e) { return (e.event_type || '').toLowerCase(); });
+    var summaries = recent.map(function(e) { return (e.summary || '').toLowerCase(); });
+
+    var hasEdit = types.some(function(t) { return t === 'tool_use'; }) &&
+      summaries.some(function(s) { return s.indexOf('edit') >= 0 || s.indexOf('write') >= 0; });
+    var hasBash = summaries.some(function(s) { return s.indexOf('bash') >= 0 || s.indexOf('test') >= 0 || s.indexOf('pytest') >= 0; });
+    var hasRead = summaries.some(function(s) { return s.indexOf('read') >= 0 || s.indexOf('grep') >= 0 || s.indexOf('glob') >= 0; });
+
+    if (hasBash) return 'TEST';
+    if (hasEdit) return 'BUILD';
+    if (hasRead) return 'RESEARCH';
+    return 'IDLE';
   }
 
-  function resizeWaveform() {
-    if (!waveformCanvas) return;
-    const rect = waveformCanvas.parentElement.getBoundingClientRect();
-    waveformCanvas.width = rect.width;
-    waveformCanvas.height = rect.height - 28; // subtract section bar
+  function initWaveform() {
+    timelineCanvas = document.getElementById('waveform-canvas');
+    if (!timelineCanvas) return;
+    timelineCtx = timelineCanvas.getContext('2d');
+    resizeTimeline();
+    window.addEventListener('resize', resizeTimeline);
+    timelineAnimId = requestAnimationFrame(drawTimeline);
+  }
+
+  function resizeTimeline() {
+    if (!timelineCanvas) return;
+    var rect = timelineCanvas.parentElement.getBoundingClientRect();
+    timelineCanvas.width = rect.width;
+    timelineCanvas.height = rect.height - 28;
   }
 
   function updateWaveformData(state) {
-    if (!state || !state.sessions) {
-      waveformData.amplitude = 0;
-      waveformData.frequency = 1;
-      return;
+    if (!state || !state.sessions) return;
+    var now = Date.now();
+
+    // Build snapshot of current session states with phases
+    var snapshot = {
+      timestamp: now,
+      sessions: []
+    };
+
+    var sessions = state.sessions || [];
+    for (var i = 0; i < sessions.length; i++) {
+      var s = sessions[i];
+      if (s.status === 'done') continue; // only track active/idle
+      var events = state.session_events ? state.session_events[s.id] : null;
+      var phase = classifyPhase(events);
+      snapshot.sessions.push({
+        slug: s.slug || s.project || s.id,
+        status: s.status,
+        color: sessionColor(s.slug),
+        phase: phase
+      });
     }
-    const activeSessions = (state.sessions || []).filter(s => s.status === 'active');
-    const totalTokens = activeSessions.reduce((sum, s) => {
-      const tc = s.token_counts || {};
-      return sum + (tc.input || 0) + (tc.output || 0);
-    }, 0);
-    // Normalise: amplitude 0-1 based on token count (log scale)
-    waveformData.amplitude = totalTokens > 0 ? Math.min(1, Math.log10(totalTokens) / 7) : 0;
-    waveformData.frequency = Math.max(1, activeSessions.length * 2);
+
+    timelineHistory.push(snapshot);
+
+    // Trim to window
+    var cutoff = now - TIMELINE_WINDOW_MS;
+    while (timelineHistory.length > 0 && timelineHistory[0].timestamp < cutoff) {
+      timelineHistory.shift();
+    }
   }
 
-  function drawWaveform(timestamp) {
-    waveformAnimId = requestAnimationFrame(drawWaveform);
-
-    // Throttle to target FPS
+  function drawTimeline(timestamp) {
+    timelineAnimId = requestAnimationFrame(drawTimeline);
     if (timestamp - lastFrameTime < TARGET_FRAME_MS) return;
     lastFrameTime = timestamp;
 
-    const ctx = waveformCtx;
-    const w = waveformCanvas.width;
-    const h = waveformCanvas.height;
-    if (!ctx || w === 0 || h === 0) return;
+    var ctx = timelineCtx;
+    if (!ctx || !timelineCanvas) return;
+    var w = timelineCanvas.width;
+    var h = timelineCanvas.height;
+    if (w === 0 || h === 0) return;
 
     ctx.clearRect(0, 0, w, h);
 
-    const amp = waveformData.amplitude;
-    const freq = waveformData.frequency;
-    const midY = h / 2;
-    const maxAmp = midY * 0.8;
-    const t = timestamp / 1000;
-
-    // Draw subtle grid (Trek-style sensor display)
-    ctx.strokeStyle = 'rgba(144, 160, 208, 0.08)';
-    ctx.lineWidth = 0.5;
-    for (let gy = 0; gy < h; gy += 20) {
-      ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(w, gy); ctx.stroke();
+    // Collect unique session slugs from history
+    var slugSet = {};
+    for (var i = 0; i < timelineHistory.length; i++) {
+      var snap = timelineHistory[i];
+      for (var j = 0; j < snap.sessions.length; j++) {
+        slugSet[snap.sessions[j].slug] = snap.sessions[j].color;
+      }
     }
-    for (let gx = 0; gx < w; gx += 40) {
-      ctx.beginPath(); ctx.moveTo(gx, 0); ctx.lineTo(gx, h); ctx.stroke();
+    var slugs = Object.keys(slugSet);
+    if (slugs.length === 0) {
+      // Empty state — draw "NO ACTIVE SESSIONS" text
+      ctx.fillStyle = '#707898';
+      ctx.font = '11px Antonio, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.letterSpacing = '2px';
+      ctx.fillText('NO ACTIVE SESSIONS', w / 2, h / 2);
+      return;
     }
 
-    // Draw waveform
-    const gradient = ctx.createLinearGradient(0, midY - maxAmp, 0, midY + maxAmp);
-    gradient.addColorStop(0, '#F0A07A');
-    gradient.addColorStop(0.5, '#FFCC99');
-    gradient.addColorStop(1, '#F0A07A');
+    var now = Date.now();
+    var leftPad = 80;  // space for labels
+    var rightPad = 60; // space for phase indicator
+    var topPad = 18;   // space for header
+    var bottomPad = 16; // space for time axis
+    var chartW = w - leftPad - rightPad;
+    var chartH = h - topPad - bottomPad;
+    var laneH = Math.min(20, Math.max(8, (chartH - 4) / slugs.length));
+    var laneGap = 2;
 
-    ctx.strokeStyle = gradient;
-    ctx.lineWidth = amp > 0.01 ? 2 : 1;
-    ctx.globalAlpha = amp > 0.01 ? 0.8 : 0.3;
+    // Header
+    ctx.fillStyle = '#707898';
+    ctx.font = '10px Antonio, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText('SESSION ACTIVITY', leftPad, 12);
 
-    ctx.beginPath();
-    for (let x = 0; x < w; x++) {
-      const xNorm = x / w * Math.PI * 2 * freq;
-      // Composite wave: main + harmonic + noise
-      const wave = Math.sin(xNorm + t * 2) * 0.6
-        + Math.sin(xNorm * 2.3 + t * 3.1) * 0.25
-        + Math.sin(xNorm * 5.7 + t * 1.7) * 0.15;
-      const baseAmp = amp > 0.01 ? amp : 0.05; // idle hum
-      const y = midY + wave * maxAmp * baseAmp;
-      if (x === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
+    // Time axis labels
+    ctx.fillStyle = '#505870';
+    ctx.font = '9px Courier New, monospace';
+    ctx.textAlign = 'center';
+    var intervals = [0, 1, 2, 3, 4, 5];
+    for (var t = 0; t < intervals.length; t++) {
+      var mins = intervals[t];
+      var xPos = leftPad + chartW - (mins / 5) * chartW;
+      ctx.fillText('-' + mins + 'm', xPos, h - 3);
     }
-    ctx.stroke();
 
-    // Glow pass — redraw with shadow for luminous effect
-    ctx.save();
-    ctx.shadowColor = '#FFCC99';
-    ctx.shadowBlur = amp > 0.01 ? 8 : 3;
-    ctx.stroke();
-    ctx.restore();
+    // Draw lanes
+    for (var si = 0; si < slugs.length; si++) {
+      var slug = slugs[si];
+      var laneY = topPad + si * (laneH + laneGap);
+      var color = slugSet[slug];
 
-    ctx.globalAlpha = 1;
+      // Label
+      ctx.fillStyle = color;
+      ctx.font = '10px Antonio, sans-serif';
+      ctx.textAlign = 'right';
+      ctx.fillText(truncate(slug, 10).toUpperCase(), leftPad - 6, laneY + laneH / 2 + 4);
+
+      // Lane background
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.02)';
+      ctx.fillRect(leftPad, laneY, chartW, laneH);
+
+      // Draw activity segments from history
+      var lastPhase = null;
+      var segStartX = null;
+
+      for (var hi = 0; hi < timelineHistory.length; hi++) {
+        var snap = timelineHistory[hi];
+        var age = now - snap.timestamp;
+        var x = leftPad + chartW - (age / TIMELINE_WINDOW_MS) * chartW;
+        if (x < leftPad) continue;
+
+        // Find this session in snapshot
+        var found = null;
+        for (var fi = 0; fi < snap.sessions.length; fi++) {
+          if (snap.sessions[fi].slug === slug) { found = snap.sessions[fi]; break; }
+        }
+
+        if (found && found.status === 'active') {
+          var phase = found.phase || 'IDLE';
+          if (lastPhase !== phase || segStartX === null) {
+            // Draw previous segment
+            if (segStartX !== null && lastPhase) {
+              var segColor = PHASE_COLORS[lastPhase] || color;
+              ctx.fillStyle = segColor;
+              ctx.globalAlpha = 0.7;
+              ctx.fillRect(segStartX, laneY + 1, x - segStartX, laneH - 2);
+              ctx.globalAlpha = 1;
+            }
+            segStartX = x;
+            lastPhase = phase;
+          }
+        } else if (found && found.status === 'idle') {
+          // Draw previous active segment
+          if (segStartX !== null && lastPhase) {
+            var segColor = PHASE_COLORS[lastPhase] || color;
+            ctx.fillStyle = segColor;
+            ctx.globalAlpha = 0.7;
+            ctx.fillRect(segStartX, laneY + 1, x - segStartX, laneH - 2);
+            ctx.globalAlpha = 1;
+          }
+          // Idle: dim segment
+          segStartX = x;
+          lastPhase = 'IDLE';
+        } else {
+          // Not in snapshot — close any open segment
+          if (segStartX !== null && lastPhase) {
+            var segColor = PHASE_COLORS[lastPhase] || color;
+            ctx.fillStyle = segColor;
+            ctx.globalAlpha = 0.7;
+            ctx.fillRect(segStartX, laneY + 1, x - segStartX, laneH - 2);
+            ctx.globalAlpha = 1;
+          }
+          segStartX = null;
+          lastPhase = null;
+        }
+      }
+
+      // Close final segment to right edge
+      if (segStartX !== null && lastPhase) {
+        var segColor = PHASE_COLORS[lastPhase] || color;
+        ctx.fillStyle = segColor;
+        ctx.globalAlpha = 0.7;
+        ctx.fillRect(segStartX, laneY + 1, leftPad + chartW - segStartX, laneH - 2);
+        ctx.globalAlpha = 1;
+
+        // Glow on right edge for currently active
+        ctx.shadowColor = segColor;
+        ctx.shadowBlur = 6;
+        ctx.fillRect(leftPad + chartW - 3, laneY + 1, 3, laneH - 2);
+        ctx.shadowBlur = 0;
+      }
+    }
+
+    // Phase legend (bottom-right corner)
+    var legendX = leftPad + chartW + 8;
+    var legendY = topPad;
+    ctx.font = '9px Antonio, sans-serif';
+    ctx.textAlign = 'left';
+    var phases = ['RESEARCH', 'BUILD', 'TEST', 'IDLE'];
+    for (var pi = 0; pi < phases.length; pi++) {
+      var py = legendY + pi * 14;
+      ctx.fillStyle = PHASE_COLORS[phases[pi]];
+      ctx.fillRect(legendX, py, 8, 8);
+      ctx.fillStyle = '#707898';
+      ctx.fillText(phases[pi], legendX + 12, py + 8);
+    }
   }
 
   // ---------------------------------------------------------------------------
