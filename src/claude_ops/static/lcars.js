@@ -198,40 +198,74 @@
     return audioCtx;
   }
 
-  function lcarsChirp(freq = 880, duration = 0.1, volume = 0.15) {
+  // LCARS-style tone: layered oscillators with frequency sweep for that
+  // characteristic TNG chirp. Two oscillators (fundamental + harmonic) with
+  // a slight pitch bend give the rounded, electronic quality.
+  function lcarsTone(freq, duration, volume, sweep) {
     if (!soundEnabled) return;
-    const ctx = getAudioContext();
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    osc.connect(gain);
-    gain.connect(ctx.destination);
-    osc.frequency.value = freq;
-    osc.type = 'sine';
-    gain.gain.setValueAtTime(volume, ctx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + duration);
-    osc.start();
-    osc.stop(ctx.currentTime + duration);
+    var ctx = getAudioContext();
+    var t = ctx.currentTime;
+    sweep = sweep || 0;
+
+    // Fundamental
+    var osc1 = ctx.createOscillator();
+    var gain1 = ctx.createGain();
+    osc1.connect(gain1);
+    gain1.connect(ctx.destination);
+    osc1.type = 'sine';
+    osc1.frequency.setValueAtTime(freq, t);
+    if (sweep) osc1.frequency.exponentialRampToValueAtTime(freq + sweep, t + duration);
+    gain1.gain.setValueAtTime(volume, t);
+    gain1.gain.exponentialRampToValueAtTime(0.001, t + duration);
+    osc1.start(t);
+    osc1.stop(t + duration);
+
+    // Soft harmonic layer (octave up, quieter) — gives LCARS its rounded quality
+    var osc2 = ctx.createOscillator();
+    var gain2 = ctx.createGain();
+    osc2.connect(gain2);
+    gain2.connect(ctx.destination);
+    osc2.type = 'sine';
+    osc2.frequency.setValueAtTime(freq * 2, t);
+    if (sweep) osc2.frequency.exponentialRampToValueAtTime((freq + sweep) * 2, t + duration);
+    gain2.gain.setValueAtTime(volume * 0.15, t);
+    gain2.gain.exponentialRampToValueAtTime(0.001, t + duration);
+    osc2.start(t);
+    osc2.stop(t + duration);
   }
 
   const sound = {
-    click() { lcarsChirp(880, 0.08); },
+    // UI tap — short rising chirp
+    click() { lcarsTone(1200, 0.06, 0.12, 200); },
+    // Rising two-tone — new session detected
     newSession() {
-      lcarsChirp(660, 0.1);
-      setTimeout(() => lcarsChirp(880, 0.1), 120);
+      lcarsTone(660, 0.09, 0.14, 80);
+      setTimeout(function() { lcarsTone(880, 0.09, 0.14, 60); }, 110);
     },
-    agentSpawn() { lcarsChirp(1100, 0.12); },
-    sessionEnd() { lcarsChirp(440, 0.2); },
+    // High bright chirp — subagent spawned
+    agentSpawn() {
+      lcarsTone(1100, 0.08, 0.12, 150);
+      setTimeout(function() { lcarsTone(1320, 0.06, 0.08, 80); }, 90);
+    },
+    // Descending tone — session complete
+    sessionEnd() {
+      lcarsTone(600, 0.12, 0.14, -120);
+      setTimeout(function() { lcarsTone(440, 0.15, 0.10, -60); }, 130);
+    },
+    // Subtle phase-specific chirp — work phase changed
     phaseChange(phase) {
-      var freqs = { RESEARCH: 520, BUILD: 620, EXECUTE: 720, COMMS: 580 };
-      lcarsChirp(freqs[phase] || 550, 0.06, 0.05);
+      var freqs = { RESEARCH: 900, BUILD: 1000, EXECUTE: 1100, COMMS: 950 };
+      lcarsTone(freqs[phase] || 900, 0.05, 0.04, 60);
     },
+    // Descending pair — kill confirmed
     killConfirm() {
-      lcarsChirp(660, 0.08, 0.1);
-      setTimeout(() => lcarsChirp(440, 0.1, 0.1), 100);
+      lcarsTone(800, 0.08, 0.10, -100);
+      setTimeout(function() { lcarsTone(500, 0.12, 0.10, -80); }, 100);
     },
+    // Low double-pulse — alert/error
     alert() {
-      lcarsChirp(330, 0.15);
-      setTimeout(() => lcarsChirp(330, 0.15), 200);
+      lcarsTone(330, 0.12, 0.15, -40);
+      setTimeout(function() { lcarsTone(330, 0.12, 0.15, -40); }, 200);
     },
   };
 
@@ -281,11 +315,19 @@
     var session = getSelectedSession();
     var isTerminal = isTerminalSession(session);
 
+    // If we have an active terminal connection, keep showing it even if the
+    // session briefly loses its terminal_id (e.g. during startup status flicker)
+    var hasActiveTerminal = activeTerminalId && terminals.has(activeTerminalId);
+    if (!isTerminal && hasActiveTerminal && pendingTerminalSelect) {
+      isTerminal = true;
+    }
+
     if (isTerminal) {
       var wasHidden = dom.panelTerminal.style.display === 'none';
       dom.detailView.style.display = 'none';
       dom.panelTerminal.style.display = 'flex';
-      connectTerminal(session.terminal_id, wasHidden);
+      var termId = session && session.terminal_id ? session.terminal_id : activeTerminalId;
+      if (termId) connectTerminal(termId, wasHidden);
     } else {
       dom.detailView.style.display = 'flex';
       dom.panelTerminal.style.display = 'none';
@@ -481,6 +523,7 @@
           var syntheticId = 'lcars-' + data.terminal_id;
           selectedSessionId = syntheticId;
           pendingTerminalSelect = data.terminal_id;
+          recentlyCreatedTerminals[data.terminal_id] = Date.now();
 
           // Show terminal panel right away so fitAddon has real dimensions
           dom.detailView.style.display = 'none';
@@ -499,6 +542,7 @@
   }
 
   var pendingTerminalSelect = null;
+  var recentlyCreatedTerminals = {}; // terminal_id -> creation timestamp
 
   // ---------------------------------------------------------------------------
   // Render: header stats
@@ -910,23 +954,27 @@
   // Diff detection & notifications
   // ---------------------------------------------------------------------------
 
+  var TERMINAL_GRACE_MS = 15000; // suppress notifications for 15s after terminal creation
+
+  function isRecentTerminalSession(session) {
+    if (!session.terminal_id) return false;
+    var created = recentlyCreatedTerminals[session.terminal_id];
+    if (!created) return false;
+    if (Date.now() - created > TERMINAL_GRACE_MS) {
+      delete recentlyCreatedTerminals[session.terminal_id];
+      return false;
+    }
+    return true;
+  }
+
   function detectChanges(prev, curr) {
     if (!prev) return;
 
-    // Collect terminal_ids we're waiting on — suppress notifications for these
-    var pendingTerminalIds = new Set();
-    if (pendingTerminalSelect) pendingTerminalIds.add(pendingTerminalSelect);
-
-    function isOwnedByPendingTerminal(session) {
-      return session.terminal_id && pendingTerminalIds.has(session.terminal_id);
-    }
-
     const prevSessionIds = new Set((prev.sessions || []).map(s => s.id));
-    const currSessionIds = new Set((curr.sessions || []).map(s => s.id));
 
     // New sessions (skip sessions we just spawned via terminal)
     for (const session of (curr.sessions || [])) {
-      if (!prevSessionIds.has(session.id) && !isOwnedByPendingTerminal(session)) {
+      if (!prevSessionIds.has(session.id) && !isRecentTerminalSession(session)) {
         sound.newSession();
         showToast(`NEW SESSION: ${formatProject(session.project)}`);
       }
@@ -950,12 +998,12 @@
       }
     }
 
-    // Session completed (skip sessions owned by pending terminals — they start as 'done'
-    // briefly before the process is detected)
+    // Session completed (skip recently created terminal sessions — they briefly
+    // appear as 'done' before the process watcher detects them)
     const prevStatusMap = new Map((prev.sessions || []).map(s => [s.id, s.status]));
     for (const session of (curr.sessions || [])) {
       if (session.status === 'done' && prevStatusMap.get(session.id) !== 'done'
-          && !isOwnedByPendingTerminal(session)) {
+          && !isRecentTerminalSession(session)) {
         sound.sessionEnd();
         showToast(`SESSION ENDED: ${formatProject(session.project)}`);
       }
@@ -965,7 +1013,7 @@
     var prevEventCount = (prev.events || []).length;
     var currEventCount = (curr.events || []).length;
     if (currEventCount > prevEventCount) {
-      lcarsChirp(660, 0.06, 0.08);
+      lcarsTone(660, 0.04, 0.06, 40);
     }
   }
 
@@ -1023,7 +1071,6 @@
     renderActivityFeed(state.events || []);
     renderResourceStrip(state.resources);
     updatePanelLayout();
-    updateWaveformData(state);
 
     // Activate data stream animation when data is flowing
     var body = document.querySelector('.lcars-body');
@@ -1062,6 +1109,9 @@
       currentState = msg;
 
       detectChanges(previousState, currentState);
+
+      // Always update timeline data and phase detection (not gated by stateKey)
+      updateWaveformData(currentState);
 
       // Skip re-render if data hasn't changed (prevents DOM flicker)
       var stateKey = JSON.stringify(msg.sessions) + JSON.stringify(msg.events);
