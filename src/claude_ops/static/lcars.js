@@ -315,22 +315,11 @@
     var session = getSelectedSession();
     var isTerminal = isTerminalSession(session);
 
-    // If the selected session is the one associated with the active terminal
-    // (either the synthetic entry or the real session), keep showing the terminal
-    // panel even if terminal_id flickered off for one poll cycle.
-    if (!isTerminal && activeTerminalId && terminals.has(activeTerminalId)) {
-      var isSyntheticForTerminal = selectedSessionId === 'lcars-' + activeTerminalId;
-      var isKnownTerminalSession = knownTerminalSessionMap[activeTerminalId] === selectedSessionId;
-      if (isSyntheticForTerminal || isKnownTerminalSession) {
-        isTerminal = true;
-      }
-    }
-
     if (isTerminal) {
       var wasHidden = dom.panelTerminal.style.display === 'none';
       dom.detailView.style.display = 'none';
       dom.panelTerminal.style.display = 'flex';
-      var termId = session && session.terminal_id ? session.terminal_id : activeTerminalId;
+      var termId = session.terminal_id || activeTerminalId;
       if (termId) connectTerminal(termId, wasHidden);
     } else {
       dom.detailView.style.display = 'flex';
@@ -1044,27 +1033,35 @@
    * Terminals that already match a session (by terminal_id) are skipped.
    * Unmatched terminals get synthetic session entries so they appear in the list.
    */
-  // Client-side cache: once a terminal_id is matched to a session, remember it.
-  // This prevents flicker when ps aux briefly doesn't detect the process and
-  // the server drops the terminal_id for one poll cycle.
+  // Client-side terminal→session link cache. Once a link is established (by
+  // server terminal_id OR by cwd match to a recently created terminal), it
+  // persists for the lifetime of the page. This is the single source of truth
+  // for "which session belongs to which terminal" — the server's terminal_id
+  // is unreliable because ps aux can miss processes between polls.
   var knownTerminalSessionMap = {}; // terminal_id -> session.id
 
   function mergeTerminalSessions(sessions, lcarsTerminals) {
     if (!lcarsTerminals || lcarsTerminals.length === 0) return sessions;
 
+    // Build lookup of active terminal cwds
+    var terminalByCwd = {}; // cwd -> terminal_id
+    var activeTerminalIds = new Set();
+    for (var ti = 0; ti < lcarsTerminals.length; ti++) {
+      terminalByCwd[lcarsTerminals[ti].cwd] = lcarsTerminals[ti].terminal_id;
+      activeTerminalIds.add(lcarsTerminals[ti].terminal_id);
+    }
+
     var matchedTerminalIds = new Set();
+
+    // Pass 1: adopt server-provided terminal_id links
     for (var i = 0; i < sessions.length; i++) {
       if (sessions[i].terminal_id) {
         matchedTerminalIds.add(sessions[i].terminal_id);
-        // Remember this mapping
         knownTerminalSessionMap[sessions[i].terminal_id] = sessions[i].id;
       }
     }
 
-    // Apply cached terminal_id to sessions that lost theirs temporarily
-    var activeTerminalIds = new Set(
-      (lcarsTerminals || []).map(function (t) { return t.terminal_id; })
-    );
+    // Pass 2: restore cached links for sessions that lost terminal_id
     for (var k = 0; k < sessions.length; k++) {
       if (!sessions[k].terminal_id) {
         for (var tid in knownTerminalSessionMap) {
@@ -1077,11 +1074,25 @@
       }
     }
 
+    // Pass 3: for still-unmatched terminals that were recently created,
+    // link to any unmatched session with the same cwd (proactive cwd match).
+    // This catches the very first poll where the server hasn't done PID ancestry yet.
+    for (var m = 0; m < sessions.length; m++) {
+      if (sessions[m].terminal_id) continue;
+      if (!sessions[m].cwd) continue;
+      var cwdTid = terminalByCwd[sessions[m].cwd];
+      if (!cwdTid || matchedTerminalIds.has(cwdTid)) continue;
+      if (!recentlyCreatedTerminals[cwdTid]) continue; // only for our terminals
+      sessions[m].terminal_id = cwdTid;
+      matchedTerminalIds.add(cwdTid);
+      knownTerminalSessionMap[cwdTid] = sessions[m].id;
+    }
+
+    // Create synthetic entries for terminals with no session at all
     var merged = sessions.slice();
     for (var j = 0; j < lcarsTerminals.length; j++) {
       var t = lcarsTerminals[j];
       if (matchedTerminalIds.has(t.terminal_id)) continue;
-      // Create a synthetic session entry
       merged.unshift({
         id: 'lcars-' + t.terminal_id,
         slug: 'lcars-terminal',
