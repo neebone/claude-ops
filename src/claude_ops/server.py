@@ -498,9 +498,17 @@ async def kill_session(pid: int):
 # ---------------------------------------------------------------------------
 
 
+# Track the active WS connection per terminal so stale finally blocks
+# don't remove a newer connection's fd reader.
+_terminal_active_conn: dict[str, int] = {}
+_terminal_conn_seq: int = 0
+
+
 @app.websocket("/ws/terminal/{terminal_id}")
 async def terminal_websocket(websocket: WebSocket, terminal_id: str):
     """Bidirectional WebSocket for terminal I/O."""
+    global _terminal_conn_seq
+
     if terminal_id not in lcars_terminals:
         await websocket.close(code=4004, reason="Terminal not found")
         return
@@ -508,6 +516,12 @@ async def terminal_websocket(websocket: WebSocket, terminal_id: str):
     await websocket.accept()
     info = lcars_terminals[terminal_id]
     fd = info["fd"]
+
+    # Assign a unique connection ID so our finally block only cleans up
+    # the reader if no newer connection has replaced it.
+    _terminal_conn_seq += 1
+    my_conn_id = _terminal_conn_seq
+    _terminal_active_conn[terminal_id] = my_conn_id
 
     # Use asyncio event-driven reader instead of blocking thread pool
     pty_queue: asyncio.Queue[bytes | None] = asyncio.Queue()
@@ -525,6 +539,9 @@ async def terminal_websocket(websocket: WebSocket, terminal_id: str):
             pty_queue.put_nowait(None)
 
     loop.add_reader(fd, _on_pty_readable)
+
+    # NOTE: we no longer send SIGWINCH here. The client handles reconnect
+    # redraws by sending a size-nudge resize sequence after the WS opens.
 
     async def read_pty():
         """Forward PTY output to browser via WebSocket."""
@@ -574,7 +591,11 @@ async def terminal_websocket(websocket: WebSocket, terminal_id: str):
     except Exception:
         pass
     finally:
-        loop.remove_reader(fd)
+        # Only remove the reader if we're still the active connection.
+        # A newer connection may have already replaced our reader.
+        if _terminal_active_conn.get(terminal_id) == my_conn_id:
+            loop.remove_reader(fd)
+            _terminal_active_conn.pop(terminal_id, None)
         read_task.cancel()
 
 

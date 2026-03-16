@@ -376,7 +376,18 @@
       // Defer initial resize until after switchToTerminal has fitted
       requestAnimationFrame(function() {
         requestAnimationFrame(function() {
-          sendTerminalResize();
+          // Force Claude to redraw by sending a slightly different size first.
+          // On reconnect, the previous output was consumed by the old WS reader,
+          // so we need Claude to repaint its TUI. A size change guarantees this.
+          var t = terminals.get(activeTerminalId);
+          if (t && t.fitAddon && t.ws && t.ws.readyState === WebSocket.OPEN) {
+            var dims = t.fitAddon.proposeDimensions();
+            if (dims) {
+              t.ws.send(JSON.stringify({ type: 'resize', cols: Math.max(1, dims.cols - 1), rows: Math.max(1, dims.rows - 1) }));
+            }
+          }
+          // Then send the real size after a short delay
+          setTimeout(function() { sendTerminalResize(); }, 50);
         });
       });
     });
