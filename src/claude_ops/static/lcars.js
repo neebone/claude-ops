@@ -55,6 +55,7 @@
   let userScrolledUp = false;
   let completedCollapsed = true;
   let renderedEventKeys = new Set();
+  let dashboardStartTime = Date.now();
 
   // Terminal state
   var terminals = new Map();     // id -> { id, ws, xterm, fitAddon, container }
@@ -78,8 +79,10 @@
     dom.activityFeed = document.getElementById('activity-feed');
     dom.btnRefresh = document.getElementById('btn-refresh');
     dom.btnSound = document.getElementById('btn-sound');
+    dom.btnScanlines = document.getElementById('btn-scanlines');
     dom.btnNewSession = document.getElementById('btn-new-session');
     dom.clock = document.getElementById('clock');
+    dom.dashboardUptime = document.getElementById('dashboard-uptime');
     dom.toastContainer = document.getElementById('toast-container');
     dom.mainTop = document.getElementById('main-top');
     dom.panelDetail = document.getElementById('panel-detail');
@@ -852,6 +855,13 @@
         showToast(`SESSION ENDED: ${formatProject(session.project)}`);
       }
     }
+
+    // New activity events
+    var prevEventCount = (prev.events || []).length;
+    var currEventCount = (curr.events || []).length;
+    if (currEventCount > prevEventCount) {
+      lcarsChirp(660, 0.06, 0.08);
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -968,6 +978,15 @@
   function updateClock() {
     const now = new Date();
     dom.clock.textContent = now.toLocaleTimeString('en-GB', { hour12: false });
+
+    // Update dashboard uptime
+    if (dom.dashboardUptime) {
+      var elapsed = Date.now() - dashboardStartTime;
+      var hrs = Math.floor(elapsed / 3600000);
+      var mins = Math.floor((elapsed % 3600000) / 60000);
+      var secs = Math.floor((elapsed % 60000) / 1000);
+      dom.dashboardUptime.textContent = String(hrs).padStart(2, '0') + ':' + String(mins).padStart(2, '0') + ':' + String(secs).padStart(2, '0');
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -999,6 +1018,15 @@
         sound.click();
       }
     });
+
+    if (dom.btnScanlines) {
+      dom.btnScanlines.addEventListener('click', () => {
+        sound.click();
+        var body = document.querySelector('.lcars-body');
+        body.classList.toggle('scanlines');
+        dom.btnScanlines.textContent = body.classList.contains('scanlines') ? 'SCAN: ON' : 'SCAN: OFF';
+      });
+    }
 
     dom.btnNewSession.addEventListener('click', () => {
       sound.click();
