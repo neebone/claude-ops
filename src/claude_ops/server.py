@@ -27,7 +27,9 @@ from claude_ops.parser import (
     SessionStatus,
     discover_sessions,
     extract_events,
+    build_agent_trees,
 )
+from claude_ops.resources import get_process_resources
 from claude_ops.watcher import find_claude_processes, match_sessions_status
 
 CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
@@ -52,6 +54,7 @@ class TerminalRequest(BaseModel):
 def _session_to_dict(
     session: Session,
     matched_terminal_ids: set[str] | None = None,
+    pid_by_cwd: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     """Convert a Session dataclass to a JSON-serializable dict."""
     # Match session to a LCARS terminal by cwd, skipping already-matched terminals
@@ -92,6 +95,10 @@ def _session_to_dict(
     }
     if terminal_id:
         result["terminal_id"] = terminal_id
+    if pid_by_cwd and session.cwd:
+        resolved = os.path.realpath(session.cwd)
+        if resolved in pid_by_cwd:
+            result["pid"] = pid_by_cwd[resolved]
     return result
 
 
@@ -102,6 +109,23 @@ def _event_to_dict(event: Any) -> dict[str, Any]:
         "session_slug": event.session_slug,
         "event_type": event.event_type.value,
         "summary": event.summary,
+    }
+
+
+def _agent_node_to_dict(node) -> dict[str, Any]:
+    """Convert an AgentNode to a JSON-serializable dict."""
+    return {
+        "agent": {
+            "id": node.agent.id,
+            "model": node.agent.model,
+            "task_summary": node.agent.task_summary,
+            "start_time": node.agent.start_time.isoformat(),
+            "last_activity": node.agent.last_activity.isoformat(),
+            "status": node.agent.status.value,
+            "token_counts": node.agent.token_counts,
+            "cost_usd": node.agent.cost_usd,
+        },
+        "children": [_agent_node_to_dict(c) for c in node.children],
     }
 
 
@@ -122,7 +146,7 @@ def _load_state() -> dict[str, Any]:
     processes = find_claude_processes()
     now = datetime.now(timezone.utc)
 
-    match_sessions_status(sessions, processes)
+    pid_map = match_sessions_status(sessions, processes)
 
     for s in sessions:
         for agent in s.agents:
@@ -130,6 +154,26 @@ def _load_state() -> dict[str, Any]:
                 agent.status = AgentStatus.IDLE
             else:
                 agent.status = AgentStatus.ACTIVE
+
+    # Resource monitoring
+    resources_data = {}
+    if processes:
+        pids = [p.pid for p in processes]
+        resources = get_process_resources(pids)
+        for pid, stats in resources.items():
+            label = pid_map.get(pid, str(pid)) if pid_map else str(pid)
+            resources_data[str(pid)] = {
+                "cpu_pct": round(stats.cpu_pct, 1),
+                "rss_mb": round(stats.rss_mb, 1),
+                "label": label,
+            }
+
+    # Build cwd-to-PID lookup for session kill buttons
+    pid_by_cwd: dict[str, int] = {}
+    if processes:
+        for proc in processes:
+            resolved = os.path.realpath(proc.cwd)
+            pid_by_cwd[resolved] = proc.pid
 
     seen_keys: set[tuple] = set()
     all_events = []
@@ -157,6 +201,18 @@ def _load_state() -> dict[str, Any]:
     all_events.sort(key=lambda e: e.timestamp)
     all_events = all_events[-MAX_ACTIVITY_EVENTS:]
 
+    # Agent trees
+    agent_trees = build_agent_trees(sessions)
+    agent_trees_data = {}
+    for sid, nodes in agent_trees.items():
+        agent_trees_data[sid] = [_agent_node_to_dict(n) for n in nodes]
+
+    # Per-session events (last 20 per session)
+    session_events: dict[str, list] = {}
+    for s in sessions:
+        slug_events = [e for e in all_events if e.session_slug == s.slug]
+        session_events[s.id] = [_event_to_dict(e) for e in slug_events[-20:]]
+
     total_cost = sum(
         s.cost_usd + sum(a.cost_usd for a in s.agents) for s in sessions
     )
@@ -171,7 +227,7 @@ def _load_state() -> dict[str, Any]:
     matched_terminal_ids: set[str] = set()
     session_dicts = []
     for s in sessions:
-        d = _session_to_dict(s, matched_terminal_ids)
+        d = _session_to_dict(s, matched_terminal_ids, pid_by_cwd)
         if d.get("terminal_id"):
             matched_terminal_ids.add(d["terminal_id"])
         session_dicts.append(d)
@@ -182,6 +238,9 @@ def _load_state() -> dict[str, Any]:
         "events": [_event_to_dict(e) for e in all_events],
         "total_cost_usd": total_cost,
         "lcars_terminals": terminal_info,
+        "resources": resources_data,
+        "agent_trees": agent_trees_data,
+        "session_events": session_events,
     }
 
 
@@ -286,6 +345,30 @@ async def list_terminals():
         {"terminal_id": tid, "cwd": info["cwd"], "pid": info["pid"]}
         for tid, info in lcars_terminals.items()
     ]
+
+
+# ---------------------------------------------------------------------------
+# Session Control
+# ---------------------------------------------------------------------------
+
+@app.post("/api/session/{pid}/kill")
+async def kill_session(pid: int):
+    """Send SIGTERM to a tracked Claude process."""
+    processes = find_claude_processes()
+    if processes is None:
+        return JSONResponse({"status": "error", "detail": "Process detection failed"}, status_code=500)
+
+    tracked_pids = {p.pid for p in processes}
+    if pid not in tracked_pids:
+        return JSONResponse({"status": "error", "detail": "PID not tracked"}, status_code=404)
+
+    try:
+        os.kill(pid, signal.SIGTERM)
+        return {"status": "ok"}
+    except ProcessLookupError:
+        return JSONResponse({"status": "error", "detail": "Process not found"}, status_code=404)
+    except PermissionError:
+        return JSONResponse({"status": "error", "detail": "Permission denied"}, status_code=500)
 
 
 # ---------------------------------------------------------------------------

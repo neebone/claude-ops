@@ -174,3 +174,31 @@ def test_load_state_includes_terminals(mock_procs, mock_sessions):
     assert len(state["lcars_terminals"]) == 1
     assert state["lcars_terminals"][0]["terminal_id"] == "t1"
     assert state["lcars_terminals"][0]["cwd"] == "/home/user"
+
+
+# ---------------------------------------------------------------------------
+# Session Control
+# ---------------------------------------------------------------------------
+
+
+@patch("claude_ops.server.find_claude_processes")
+@patch("claude_ops.server.os.kill")
+def test_kill_session_success(mock_kill, mock_find_procs, client):
+    """POST /api/session/{pid}/kill should send SIGTERM to tracked process."""
+    from claude_ops.watcher import ClaudeProcess
+    mock_find_procs.return_value = [ClaudeProcess(pid=1234, cwd="/tmp")]
+
+    resp = client.post("/api/session/1234/kill")
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "ok"
+    mock_kill.assert_called_once_with(1234, 15)  # SIGTERM
+
+
+@patch("claude_ops.server.find_claude_processes")
+def test_kill_session_not_tracked(mock_find_procs, client):
+    """POST /api/session/{pid}/kill should 404 for untracked PIDs."""
+    from claude_ops.watcher import ClaudeProcess
+    mock_find_procs.return_value = [ClaudeProcess(pid=5678, cwd="/tmp")]
+
+    resp = client.post("/api/session/9999/kill")
+    assert resp.status_code == 404
