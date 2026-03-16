@@ -855,3 +855,112 @@ body {
   min-height: 0;
   background: var(--lcars-bg);
 }
+
+/* --------------------------------------------------------------------------
+   Resource Monitor Strip
+   -------------------------------------------------------------------------- */
+.lcars-resource-strip {
+  display: flex;
+  flex-direction: row;
+  gap: 8px;
+  padding: 4px 8px;
+  flex-shrink: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.lcars-resource-strip:empty {
+  display: none;
+}
+
+.lcars-resource-gauge {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 120px;
+  max-width: 250px;
+}
+
+.lcars-resource-gauge .gauge-label {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--lcars-lavender);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  white-space: nowrap;
+  min-width: 60px;
+}
+
+.lcars-resource-gauge .gauge-bar {
+  flex: 1;
+  height: 10px;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 0 5px 5px 0;
+  overflow: hidden;
+  min-width: 40px;
+}
+
+.lcars-resource-gauge .gauge-fill {
+  height: 100%;
+  border-radius: 0 5px 5px 0;
+  transition: width 500ms ease-out, background 500ms ease;
+  box-shadow: 0 0 4px currentColor;
+}
+
+.lcars-resource-gauge .gauge-value {
+  font-family: 'Courier New', monospace;
+  font-size: 10px;
+  color: var(--lcars-gold);
+  white-space: nowrap;
+  min-width: 50px;
+  text-align: right;
+}
+
+/* --------------------------------------------------------------------------
+   Active/Completed Session Split
+   -------------------------------------------------------------------------- */
+.lcars-session-divider {
+  background: var(--lcars-dim);
+  height: 20px;
+  border-radius: 0 10px 10px 0;
+  margin: 4px 0;
+  padding: 0 12px;
+  display: flex;
+  align-items: center;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  color: var(--lcars-bg);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.15s;
+}
+
+.lcars-session-divider:hover {
+  background: var(--lcars-lavender);
+}
+
+.lcars-completed-zone {
+  overflow: hidden;
+  transition: max-height 300ms ease;
+}
+
+.lcars-completed-zone.collapsed {
+  max-height: 0;
+}
+
+.lcars-completed-item {
+  padding: 4px 12px;
+  font-size: 11px;
+  color: var(--lcars-dim);
+  display: flex;
+  justify-content: space-between;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.lcars-completed-item:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
