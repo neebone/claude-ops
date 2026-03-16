@@ -1053,6 +1053,48 @@ body {
   margin-left: 8px;
 }
 
+/* --------------------------------------------------------------------------
+   Terminal Tabs
+   -------------------------------------------------------------------------- */
+.lcars-terminal-tabs {
+  display: flex;
+  gap: 2px;
+  margin-left: 12px;
+  align-items: center;
+}
+
+.lcars-terminal-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 10px;
+  border-radius: 6px 6px 0 0;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  cursor: pointer;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--lcars-text);
+  transition: background 0.15s;
+}
+
+.lcars-terminal-tab.active {
+  background: var(--lcars-ice);
+  color: var(--lcars-dark, #1A1A2E);
+}
+
+.lcars-terminal-tab .tab-close {
+  font-size: 12px;
+  margin-left: 4px;
+  opacity: 0.6;
+  cursor: pointer;
+}
+
+.lcars-terminal-tab .tab-close:hover {
+  opacity: 1;
+}
+
 .lcars-shortcut-list kbd {
   display: inline-block;
   padding: 1px 8px;

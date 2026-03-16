@@ -57,7 +57,8 @@
   let renderedEventKeys = new Set();
 
   // Terminal state
-  let activeTerminal = null;   // { id, ws, xterm, fitAddon }
+  var terminals = new Map();     // id -> { id, ws, xterm, fitAddon, container }
+  var activeTerminalId = null;
 
   // ---------------------------------------------------------------------------
   // DOM references
@@ -85,6 +86,7 @@
     dom.panelAgents = document.getElementById('panel-agents');
     dom.panelTerminal = document.getElementById('panel-terminal');
     dom.terminalContainer = document.getElementById('terminal-container');
+    dom.terminalTabs = document.getElementById('terminal-tabs');
     dom.detailView = document.getElementById('detail-view');
     dom.resourceStrip = document.getElementById('resource-strip');
     dom.statTokens = document.getElementById('stat-tokens');
@@ -285,30 +287,31 @@
   // ---------------------------------------------------------------------------
 
   function connectTerminal(terminalId, wasHidden) {
-    // Already connected to this terminal
-    if (activeTerminal && activeTerminal.id === terminalId) {
-      // Only re-fit/refresh if the panel was just made visible again
+    // If already exists, just switch to it
+    if (terminals.has(terminalId)) {
+      switchToTerminal(terminalId);
       if (wasHidden) {
-        requestAnimationFrame(function () {
-          requestAnimationFrame(function () {
-            if (!activeTerminal || !activeTerminal.fitAddon) return;
-            if (activeTerminal.xterm.clearTextureAtlas) {
-              activeTerminal.xterm.clearTextureAtlas();
-            }
-            activeTerminal.fitAddon.fit();
+        requestAnimationFrame(function() {
+          requestAnimationFrame(function() {
+            var t = terminals.get(activeTerminalId);
+            if (!t) return;
+            if (t.xterm.clearTextureAtlas) t.xterm.clearTextureAtlas();
+            t.fitAddon.fit();
             sendTerminalResize();
-            activeTerminal.xterm.refresh(0, activeTerminal.xterm.rows - 1);
-            activeTerminal.xterm.focus();
+            t.xterm.refresh(0, t.xterm.rows - 1);
+            t.xterm.focus();
           });
         });
       }
       return;
     }
 
-    // Switching to a different terminal — disconnect the old one
-    disconnectTerminal();
+    // Create a container div for this terminal
+    var container = document.createElement('div');
+    container.id = 'term-' + terminalId;
+    container.style.cssText = 'flex:1;min-height:0;overflow:hidden;display:none;';
+    dom.terminalContainer.appendChild(container);
 
-    // Create xterm.js instance
     var xterm = new Terminal({
       theme: LCARS_THEME,
       fontFamily: "'Courier New', monospace",
@@ -319,94 +322,117 @@
 
     var fitAddon = new FitAddon.FitAddon();
     xterm.loadAddon(fitAddon);
+    xterm.open(container);
 
-    xterm.open(dom.terminalContainer);
-    fitAddon.fit();
-    xterm.focus();
-
-    // Connect WebSocket
     var wsUrl = 'ws://' + window.location.host + '/ws/terminal/' + terminalId;
     var termWs = new WebSocket(wsUrl);
 
-    termWs.addEventListener('open', function () {
-      // Send initial resize
+    termWs.addEventListener('open', function() {
       var dims = fitAddon.proposeDimensions();
       if (dims) {
-        termWs.send(JSON.stringify({
-          type: 'resize',
-          cols: dims.cols,
-          rows: dims.rows,
-        }));
+        termWs.send(JSON.stringify({ type: 'resize', cols: dims.cols, rows: dims.rows }));
       }
     });
 
-    termWs.addEventListener('message', function (event) {
-      xterm.write(event.data);
+    termWs.addEventListener('message', function(event) { xterm.write(event.data); });
+
+    xterm.onData(function(data) {
+      if (termWs.readyState === WebSocket.OPEN) termWs.send(data);
     });
 
-    termWs.addEventListener('close', function () {
-      // Terminal WebSocket closed — could reconnect
-    });
-
-    // Forward keystrokes to server
-    xterm.onData(function (data) {
-      if (termWs.readyState === WebSocket.OPEN) {
-        termWs.send(data);
-      }
-    });
-
-    activeTerminal = {
-      id: terminalId,
-      ws: termWs,
-      xterm: xterm,
-      fitAddon: fitAddon,
-    };
-
-    // Handle window resize
+    terminals.set(terminalId, { id: terminalId, ws: termWs, xterm: xterm, fitAddon: fitAddon, container: container });
+    switchToTerminal(terminalId);
     window.addEventListener('resize', handleTerminalResize);
   }
 
-  function disconnectTerminal() {
-    if (!activeTerminal) return;
-
-    window.removeEventListener('resize', handleTerminalResize);
-
-    if (activeTerminal.ws) {
-      try { activeTerminal.ws.close(); } catch (_) { /* noop */ }
+  function switchToTerminal(terminalId) {
+    // Hide all terminal containers, show selected
+    terminals.forEach(function(t, id) {
+      t.container.style.display = id === terminalId ? 'flex' : 'none';
+    });
+    activeTerminalId = terminalId;
+    var t = terminals.get(terminalId);
+    if (t) {
+      t.fitAddon.fit();
+      t.xterm.focus();
     }
-    if (activeTerminal.xterm) {
-      activeTerminal.xterm.dispose();
+    renderTerminalTabs();
+  }
+
+  function closeTerminal(terminalId) {
+    var t = terminals.get(terminalId);
+    if (!t) return;
+
+    if (t.ws) try { t.ws.close(); } catch (_) {}
+    if (t.xterm) t.xterm.dispose();
+    if (t.container) t.container.remove();
+    terminals.delete(terminalId);
+
+    // If we closed the active one, switch to another or hide panel
+    if (activeTerminalId === terminalId) {
+      var remaining = Array.from(terminals.keys());
+      if (remaining.length > 0) {
+        switchToTerminal(remaining[0]);
+      } else {
+        activeTerminalId = null;
+        window.removeEventListener('resize', handleTerminalResize);
+      }
     }
-    dom.terminalContainer.innerHTML = '';
-    activeTerminal = null;
+    renderTerminalTabs();
+
+    // Also delete from backend
+    fetch('/api/terminal/' + terminalId, { method: 'DELETE' });
+  }
+
+  function renderTerminalTabs() {
+    var tabsEl = document.getElementById('terminal-tabs');
+    if (!tabsEl) return;
+
+    var idx = 0;
+    tabsEl.innerHTML = '';
+    terminals.forEach(function(t, id) {
+      idx++;
+      var isActive = id === activeTerminalId;
+      var tab = document.createElement('div');
+      tab.className = 'lcars-terminal-tab' + (isActive ? ' active' : '');
+      tab.innerHTML = '#' + idx + ' <span class="tab-close">&times;</span>';
+      tab.addEventListener('click', function(e) {
+        if (e.target.classList.contains('tab-close')) {
+          closeTerminal(id);
+        } else {
+          switchToTerminal(id);
+          sound.click();
+        }
+      });
+      tabsEl.appendChild(tab);
+    });
   }
 
   function handleTerminalResize() {
-    if (!activeTerminal || !activeTerminal.fitAddon) return;
-    activeTerminal.fitAddon.fit();
+    var t = terminals.get(activeTerminalId);
+    if (!t || !t.fitAddon) return;
+    t.fitAddon.fit();
     sendTerminalResize();
   }
 
   function sendTerminalResize() {
-    if (!activeTerminal || !activeTerminal.ws || !activeTerminal.fitAddon) return;
-    if (activeTerminal.ws.readyState !== WebSocket.OPEN) return;
-    var dims = activeTerminal.fitAddon.proposeDimensions();
+    var t = terminals.get(activeTerminalId);
+    if (!t || !t.ws || !t.fitAddon) return;
+    if (t.ws.readyState !== WebSocket.OPEN) return;
+    var dims = t.fitAddon.proposeDimensions();
     if (dims) {
-      activeTerminal.ws.send(JSON.stringify({
-        type: 'resize',
-        cols: dims.cols,
-        rows: dims.rows,
-      }));
+      t.ws.send(JSON.stringify({ type: 'resize', cols: dims.cols, rows: dims.rows }));
     }
   }
 
   // Re-fit terminal when returning to the tab (browser tab switch)
   document.addEventListener('visibilitychange', function () {
-    if (!document.hidden && activeTerminal && activeTerminal.fitAddon) {
+    var t = terminals.get(activeTerminalId);
+    if (!document.hidden && t && t.fitAddon) {
       setTimeout(function () {
-        activeTerminal.fitAddon.fit();
+        t.fitAddon.fit();
         sendTerminalResize();
-        activeTerminal.xterm.refresh(0, activeTerminal.xterm.rows - 1);
+        t.xterm.refresh(0, t.xterm.rows - 1);
       }, 100);
     }
   });
