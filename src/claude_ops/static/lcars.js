@@ -481,6 +481,12 @@
       ? '<span class="lcars-badge">LCARS</span>'
       : '';
 
+    var actionsHtml = '<div class="lcars-session-actions">'
+      + (session.status !== 'done' && session.pid ? '<button class="lcars-action-btn kill" data-action="kill" data-pid="' + (session.pid || '') + '" title="Kill session">KILL</button>' : '')
+      + '<button class="lcars-action-btn copy-path" data-action="copy-path" data-value="' + (session.cwd || '') + '" title="Copy working directory">PATH</button>'
+      + '<button class="lcars-action-btn copy-id" data-action="copy-id" data-value="' + session.id + '" title="Copy session ID">ID</button>'
+      + '</div>';
+
     return '<div class="lcars-session-item' + selected + '" data-session-id="' + session.id + '" style="border-left-color: ' + color + '">'
       + '<div class="session-name">'
       + '<span class="status-' + session.status + '" title="' + session.status + '"></span> '
@@ -489,6 +495,7 @@
       + '</div>'
       + '<div class="session-meta">' + (session.branch || '--') + ' &middot; ' + formatDuration(session.start_time) + ' &middot; ' + formatCost(session.cost_usd) + '</div>'
       + agentLine
+      + actionsHtml
       + '</div>';
   }
 
@@ -554,6 +561,28 @@
         sound.click();
         selectedSessionId = el.dataset.sessionId;
         render(currentState);
+      });
+    });
+
+    // Action button handlers
+    dom.sessionList.querySelectorAll('.lcars-action-btn').forEach(function(btn) {
+      btn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        var action = btn.dataset.action;
+        if (action === 'kill') {
+          var pid = btn.dataset.pid;
+          if (pid) {
+            fetch('/api/session/' + pid + '/kill', { method: 'POST' })
+              .then(function(r) { return r.json(); })
+              .then(function(d) {
+                showToast(d.status === 'ok' ? 'SESSION TERMINATED' : 'KILL FAILED');
+              });
+          }
+        } else if (action === 'copy-path' || action === 'copy-id') {
+          navigator.clipboard.writeText(btn.dataset.value).then(function() {
+            showToast('COPIED TO CLIPBOARD');
+          });
+        }
       });
     });
   }

@@ -435,6 +435,8 @@ body {
   cursor: pointer;
   transition: background 0.15s, border-left-color 300ms ease;
   margin-bottom: 2px;
+  position: relative;
+  overflow: hidden;
 }
 
 .lcars-session-item:hover { background: rgba(255, 255, 255, 0.06); }
@@ -963,4 +965,57 @@ body {
 
 .lcars-completed-item:hover {
   background: rgba(255, 255, 255, 0.04);
+}
+
+/* --------------------------------------------------------------------------
+   Session Card Actions
+   -------------------------------------------------------------------------- */
+.lcars-session-actions {
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 8px;
+  background: linear-gradient(90deg, transparent, rgba(0,0,0,0.8) 20%);
+  transform: translateX(100%);
+  transition: transform 150ms ease;
+}
+
+.lcars-session-item:hover .lcars-session-actions {
+  transform: translateX(0);
+}
+
+.lcars-action-btn {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border: none;
+  border-radius: 8px;
+  font-family: 'Antonio', sans-serif;
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  cursor: pointer;
+  transition: filter 0.15s;
+}
+
+.lcars-action-btn:hover { filter: brightness(1.3); }
+
+.lcars-action-btn.kill {
+  background: var(--lcars-red);
+  color: #FFFFFF;
+  font-size: 10px;
+  padding: 3px 10px;
+}
+
+.lcars-action-btn.copy-path,
+.lcars-action-btn.copy-id {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--lcars-text);
+  font-size: 9px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
 }
