@@ -99,6 +99,29 @@ class ActivityEvent:
     summary: str
 
 
+@dataclass
+class AgentNode:
+    """A node in the agent hierarchy tree."""
+    agent: Agent
+    children: list[AgentNode] = field(default_factory=list)
+
+
+def build_agent_trees(sessions: list[Session]) -> dict[str, list[AgentNode]]:
+    """Build agent hierarchy trees for each session.
+
+    Currently builds flat trees (session -> agents) since Claude Code
+    stores subagents in a flat directory. If nested subagent directories
+    are found in the future, this can be extended to walk deeper.
+
+    Returns a dict mapping session_id -> list of root AgentNodes.
+    """
+    trees: dict[str, list[AgentNode]] = {}
+    for session in sessions:
+        nodes = [AgentNode(agent=agent) for agent in session.agents]
+        trees[session.id] = nodes
+    return trees
+
+
 def _parse_timestamp(timestamp_str: str) -> datetime | None:
     try:
         return datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))

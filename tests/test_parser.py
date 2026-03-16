@@ -3,7 +3,7 @@ from pathlib import Path
 from claude_ops.parser import (
     Session, Agent, ActivityEvent, EventType, SessionStatus, AgentStatus,
     calculate_cost, MODEL_PRICING, parse_session_file, parse_agent_file,
-    extract_events,
+    extract_events, AgentNode, build_agent_trees,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -230,3 +230,55 @@ def test_discover_sessions_ignores_old(tmp_path):
 
     sessions = discover_sessions(tmp_path / "projects")
     assert len(sessions) == 0
+
+
+def test_build_agent_trees_flat():
+    """Flat subagents should produce a one-level tree."""
+    session = Session(
+        id="sess-1", slug="test", project="proj", cwd="/tmp",
+        branch="main", version="2.1",
+        start_time=datetime.now(timezone.utc),
+        last_activity=datetime.now(timezone.utc),
+        status=SessionStatus.UNKNOWN,
+        message_counts={}, token_counts={}, cost_usd=0,
+        agents=[
+            Agent(
+                id="a1", session_id="sess-1", model="opus", task_summary="task1",
+                start_time=datetime.now(timezone.utc),
+                last_activity=datetime.now(timezone.utc),
+                status=AgentStatus.ACTIVE,
+                token_counts={"input": 0, "output": 0, "cache_read": 0, "cache_write": 0},
+                cost_usd=0,
+            ),
+            Agent(
+                id="a2", session_id="sess-1", model="sonnet", task_summary="task2",
+                start_time=datetime.now(timezone.utc),
+                last_activity=datetime.now(timezone.utc),
+                status=AgentStatus.ACTIVE,
+                token_counts={"input": 0, "output": 0, "cache_read": 0, "cache_write": 0},
+                cost_usd=0,
+            ),
+        ],
+    )
+    trees = build_agent_trees([session])
+    assert "sess-1" in trees
+    root = trees["sess-1"]
+    assert len(root) == 2
+    assert root[0].agent.id == "a1"
+    assert root[0].children == []
+    assert root[1].agent.id == "a2"
+
+
+def test_build_agent_trees_empty():
+    """Sessions with no agents should produce empty tree."""
+    session = Session(
+        id="sess-2", slug="test2", project="proj", cwd="/tmp",
+        branch="main", version="2.1",
+        start_time=datetime.now(timezone.utc),
+        last_activity=datetime.now(timezone.utc),
+        status=SessionStatus.UNKNOWN,
+        message_counts={}, token_counts={}, cost_usd=0,
+    )
+    trees = build_agent_trees([session])
+    assert "sess-2" in trees
+    assert trees["sess-2"] == []
