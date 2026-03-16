@@ -221,6 +221,14 @@
     },
     agentSpawn() { lcarsChirp(1100, 0.12); },
     sessionEnd() { lcarsChirp(440, 0.2); },
+    phaseChange(phase) {
+      var freqs = { RESEARCH: 520, BUILD: 620, EXECUTE: 720, COMMS: 580 };
+      lcarsChirp(freqs[phase] || 550, 0.06, 0.05);
+    },
+    killConfirm() {
+      lcarsChirp(660, 0.08, 0.1);
+      setTimeout(() => lcarsChirp(440, 0.1, 0.1), 100);
+    },
     alert() {
       lcarsChirp(330, 0.15);
       setTimeout(() => lcarsChirp(330, 0.15), 200);
@@ -634,7 +642,13 @@
             fetch('/api/session/' + pid + '/kill', { method: 'POST' })
               .then(function(r) { return r.json(); })
               .then(function(d) {
-                showToast(d.status === 'ok' ? 'SESSION TERMINATED' : 'KILL FAILED');
+                if (d.status === 'ok') {
+                  showToast('SESSION TERMINATED');
+                  sound.killConfirm();
+                } else {
+                  showToast('KILL FAILED');
+                  sound.alert();
+                }
               });
           }
         } else if (action === 'copy-path' || action === 'copy-id') {
@@ -1135,6 +1149,7 @@
 
   // Rolling history: array of { timestamp, sessions: [{slug, status, color, phase}] }
   var timelineHistory = [];
+  var lastPhaseBySession = {}; // slug -> last known phase
   var TIMELINE_WINDOW_MS = 5 * 60 * 1000; // 5 minute window
 
   // Tool phase classification — keyed on tool name, not summary text
@@ -1211,8 +1226,16 @@
       if (s.status === 'done') continue; // only track active/idle
       var events = state.session_events ? state.session_events[s.id] : null;
       var phase = classifyPhase(events);
+      var slug = s.slug || s.project || s.id;
+
+      // Subtle audio cue on phase transitions (skip IDLE transitions)
+      if (phase !== 'IDLE' && lastPhaseBySession[slug] && lastPhaseBySession[slug] !== phase) {
+        sound.phaseChange(phase);
+      }
+      lastPhaseBySession[slug] = phase;
+
       snapshot.sessions.push({
-        slug: s.slug || s.project || s.id,
+        slug: slug,
         status: s.status,
         color: sessionColor(s.slug),
         phase: phase
