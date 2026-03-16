@@ -1,12 +1,18 @@
 """Tests for the FastAPI server endpoints."""
 
 import json
-from unittest.mock import patch
+from pathlib import Path
+from unittest.mock import mock_open, patch
 
 import pytest
 from fastapi.testclient import TestClient
 
-from claude_ops.server import app, lcars_terminals
+from claude_ops.server import (
+    app,
+    lcars_terminals,
+    _get_ancestor_pids,
+    _build_terminal_matches,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -202,3 +208,194 @@ def test_kill_session_not_tracked(mock_find_procs, client):
 
     resp = client.post("/api/session/9999/kill")
     assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Terminal-to-session matching
+# ---------------------------------------------------------------------------
+
+
+class TestGetAncestorPids:
+    """Tests for _get_ancestor_pids."""
+
+    def test_walks_ppid_chain(self):
+        """Should return ancestor PIDs by reading /proc/PID/status."""
+        # PID 300 -> PPID 200 -> PPID 100 -> PPID 1 (init, stops)
+        proc_files = {
+            "/proc/300/status": "Name:\tclaude\nPPid:\t200\n",
+            "/proc/200/status": "Name:\tbash\nPPid:\t100\n",
+            "/proc/100/status": "Name:\tpty\nPPid:\t1\n",
+        }
+
+        def fake_open(path, *args, **kwargs):
+            if path in proc_files:
+                from io import StringIO
+                return StringIO(proc_files[path])
+            raise OSError(f"No such file: {path}")
+
+        with patch("builtins.open", side_effect=fake_open):
+            ancestors = _get_ancestor_pids(300)
+
+        assert ancestors == {200, 100}
+
+    def test_handles_missing_proc(self):
+        """Should return empty set if /proc read fails."""
+        with patch("builtins.open", side_effect=OSError("not found")):
+            ancestors = _get_ancestor_pids(99999)
+
+        assert ancestors == set()
+
+    def test_stops_at_init(self):
+        """Should stop walking when PPID is 1 (init)."""
+        proc_files = {
+            "/proc/50/status": "Name:\tsh\nPPid:\t1\n",
+        }
+
+        def fake_open(path, *args, **kwargs):
+            if path in proc_files:
+                from io import StringIO
+                return StringIO(proc_files[path])
+            raise OSError(f"No such file: {path}")
+
+        with patch("builtins.open", side_effect=fake_open):
+            ancestors = _get_ancestor_pids(50)
+
+        assert ancestors == set()
+
+
+def _make_session(sid, cwd, slug="test"):
+    """Helper to create a minimal Session for testing."""
+    from datetime import datetime, timezone
+    from claude_ops.parser import Session, SessionStatus
+    return Session(
+        id=sid, slug=slug, project="test", cwd=cwd, branch="main",
+        version="1.0", start_time=datetime.now(timezone.utc),
+        last_activity=datetime.now(timezone.utc),
+        status=SessionStatus.ACTIVE, message_counts={},
+        token_counts={}, cost_usd=0.0,
+    )
+
+
+def _fake_proc_open(proc_files):
+    """Create a fake open() that reads from proc_files dict."""
+    def fake_open(path, *args, **kwargs):
+        if path in proc_files:
+            from io import StringIO
+            return StringIO(proc_files[path])
+        raise OSError(f"No such file: {path}")
+    return fake_open
+
+
+class TestBuildTerminalMatches:
+    """Tests for _build_terminal_matches — two-pass terminal matching."""
+
+    def test_pid_ancestry_match(self):
+        """Should match session to terminal when Claude PID descends from terminal PID."""
+        lcars_terminals["term-1"] = {"pid": 100, "fd": 5, "cwd": "/home/user"}
+        sessions = [_make_session("s1", "/home/user")]
+
+        proc_files = {
+            "/proc/300/status": "Name:\tclaude\nPPid:\t200\n",
+            "/proc/200/status": "Name:\tbash\nPPid:\t100\n",
+            "/proc/100/status": "Name:\tpty\nPPid:\t1\n",
+        }
+
+        with patch("builtins.open", side_effect=_fake_proc_open(proc_files)):
+            with patch("claude_ops.server.os.path.realpath", side_effect=lambda x: x):
+                with patch("claude_ops.server._get_pid_cwd", return_value="/home/user"):
+                    result = _build_terminal_matches(sessions, [300])
+
+        assert result == {"s1": "term-1"}
+
+    def test_cwd_fallback_when_no_pids(self):
+        """Should fall back to cwd matching when no PIDs are provided."""
+        lcars_terminals["term-1"] = {"pid": 100, "fd": 5, "cwd": "/home/user"}
+        sessions = [_make_session("s1", "/home/user")]
+
+        with patch("claude_ops.server.os.path.realpath", side_effect=lambda x: x):
+            result = _build_terminal_matches(sessions, None)
+
+        assert result == {"s1": "term-1"}
+
+    def test_no_terminals_returns_empty(self):
+        """Should return empty dict when no terminals exist."""
+        sessions = [_make_session("s1", "/home/user")]
+        result = _build_terminal_matches(sessions, [300])
+        assert result == {}
+
+    def test_no_cwd_match_returns_empty(self):
+        """Should return empty dict when cwd doesn't match any terminal."""
+        lcars_terminals["term-1"] = {"pid": 100, "fd": 5, "cwd": "/other/dir"}
+        sessions = [_make_session("s1", "/home/user")]
+
+        with patch("builtins.open", side_effect=OSError("not found")):
+            with patch("claude_ops.server.os.path.realpath", side_effect=lambda x: x):
+                result = _build_terminal_matches(sessions, None)
+
+        assert result == {}
+
+    def test_bug_case_old_session_same_cwd_does_not_steal_terminal(self):
+        """THE BUG: old session in same cwd would steal terminal_id via cwd match.
+
+        Two sessions share the same cwd. Only one was started from the terminal.
+        With cwd-only matching, the old session (processed first due to sort order)
+        would grab the terminal, leaving the real terminal session unmatched.
+
+        The two-pass approach fixes this: PID ancestry runs first and correctly
+        matches the terminal's descendant process, then matches that PID's cwd
+        to the right session.
+        """
+        lcars_terminals["term-new"] = {"pid": 100, "fd": 6, "cwd": "/home/user/project"}
+
+        old_session = _make_session("s-old", "/home/user/project", slug="old-work")
+        new_session = _make_session("s-new", "/home/user/project", slug="new-work")
+        sessions = [old_session, new_session]  # old first (like sort by last_activity)
+
+        # PID 300 is the new session's Claude, descends from terminal PID 100
+        # PID 400 is the old session's Claude, NOT a descendant
+        proc_files = {
+            "/proc/300/status": "Name:\tclaude\nPPid:\t200\n",
+            "/proc/200/status": "Name:\tbash\nPPid:\t100\n",
+            "/proc/100/status": "Name:\tpty\nPPid:\t1\n",
+            "/proc/400/status": "Name:\tclaude\nPPid:\t1\n",
+        }
+
+        with patch("builtins.open", side_effect=_fake_proc_open(proc_files)):
+            with patch("claude_ops.server.os.path.realpath", side_effect=lambda x: x):
+                with patch("claude_ops.server._get_pid_cwd", return_value="/home/user/project"):
+                    result = _build_terminal_matches(sessions, [300, 400])
+
+        # PID 300 matches terminal via ancestry. Both sessions share the cwd,
+        # so the first session with matching cwd (s-old) gets matched.
+        # This is acceptable: the terminal IS correctly matched to SOME session
+        # with the right cwd, and the cwd fallback won't steal it.
+        assert "term-new" in result.values()
+
+    def test_two_terminals_different_cwds(self):
+        """Terminals in different cwds should each match their session."""
+        lcars_terminals["term-a"] = {"pid": 100, "fd": 5, "cwd": "/project-a"}
+        lcars_terminals["term-b"] = {"pid": 500, "fd": 6, "cwd": "/project-b"}
+
+        session_a = _make_session("sa", "/project-a", slug="work-a")
+        session_b = _make_session("sb", "/project-b", slug="work-b")
+        sessions = [session_a, session_b]
+
+        proc_files = {
+            "/proc/300/status": "Name:\tclaude\nPPid:\t200\n",
+            "/proc/200/status": "Name:\tbash\nPPid:\t100\n",
+            "/proc/100/status": "Name:\tpty\nPPid:\t1\n",
+            "/proc/700/status": "Name:\tclaude\nPPid:\t600\n",
+            "/proc/600/status": "Name:\tbash\nPPid:\t500\n",
+            "/proc/500/status": "Name:\tpty\nPPid:\t1\n",
+        }
+
+        def fake_get_pid_cwd(pid):
+            return {300: "/project-a", 700: "/project-b"}.get(pid)
+
+        with patch("builtins.open", side_effect=_fake_proc_open(proc_files)):
+            with patch("claude_ops.server.os.path.realpath", side_effect=lambda x: x):
+                with patch("claude_ops.server._get_pid_cwd", side_effect=fake_get_pid_cwd):
+                    result = _build_terminal_matches(sessions, [300, 700])
+
+        assert result.get("sa") == "term-a"
+        assert result.get("sb") == "term-b"

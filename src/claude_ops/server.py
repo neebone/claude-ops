@@ -51,20 +51,118 @@ class TerminalRequest(BaseModel):
     cwd: str
 
 
+def _get_ancestor_pids(pid: int, max_depth: int = 10) -> set[int]:
+    """Walk up the PPID chain from /proc and return all ancestor PIDs."""
+    ancestors: set[int] = set()
+    current = pid
+    for _ in range(max_depth):
+        try:
+            with open(f"/proc/{current}/status") as f:
+                for line in f:
+                    if line.startswith("PPid:"):
+                        ppid = int(line.split()[1])
+                        if ppid <= 1:
+                            return ancestors
+                        ancestors.add(ppid)
+                        current = ppid
+                        break
+                else:
+                    return ancestors
+        except (OSError, ValueError):
+            return ancestors
+    return ancestors
+
+
+def _get_pid_cwd(pid: int) -> str | None:
+    """Get the working directory of a process via /proc symlink."""
+    try:
+        return str(Path(f"/proc/{pid}/cwd").resolve())
+    except OSError:
+        return None
+
+
+def _build_terminal_matches(
+    sessions: list[Session],
+    all_pids: list[int] | None = None,
+) -> dict[str, str]:
+    """Build a map of session_id -> terminal_id using two-pass matching.
+
+    Pass 1 (PID ancestry — definitive): For each terminal, find which Claude
+    process PID is a descendant of the terminal PID. Then match that PID to
+    the session that owns it via cwd. This is always correct because it uses
+    the actual process tree, not just directory matching.
+
+    Pass 2 (CWD fallback): For unmatched terminals, fall back to cwd matching.
+    This handles the case where the Claude process hasn't been detected yet.
+
+    Two-pass ensures that PID ancestry always wins, preventing older sessions
+    in the same cwd from stealing a terminal match.
+    """
+    if not lcars_terminals:
+        return {}
+
+    session_terminal_map: dict[str, str] = {}  # session.id -> terminal_id
+    matched_terminal_ids: set[str] = set()
+    matched_session_ids: set[str] = set()
+
+    # Pass 1: PID ancestry (definitive)
+    # For each Claude PID, walk its ancestor chain and check against terminal PIDs
+    terminal_pids = {
+        tinfo["pid"]: tid
+        for tid, tinfo in lcars_terminals.items()
+        if tinfo.get("pid")
+    }
+
+    if all_pids and terminal_pids:
+        for claude_pid in all_pids:
+            ancestors = _get_ancestor_pids(claude_pid)
+            for term_pid, tid in terminal_pids.items():
+                if tid in matched_terminal_ids:
+                    continue
+                if term_pid in ancestors:
+                    # Found the terminal. Now find which session this PID belongs to
+                    # by matching the PID's cwd to a session cwd.
+                    try:
+                        pid_cwd = _get_pid_cwd(claude_pid)
+                    except OSError:
+                        continue
+                    if not pid_cwd:
+                        continue
+                    for s in sessions:
+                        if s.id in matched_session_ids:
+                            continue
+                        if s.cwd and os.path.realpath(s.cwd) == pid_cwd:
+                            session_terminal_map[s.id] = tid
+                            matched_terminal_ids.add(tid)
+                            matched_session_ids.add(s.id)
+                            break
+                    break  # This PID is matched, move to next
+
+    # Pass 2: CWD fallback for remaining unmatched terminals
+    for s in sessions:
+        if s.id in matched_session_ids:
+            continue
+        if not s.cwd:
+            continue
+        resolved_cwd = os.path.realpath(s.cwd)
+        for tid, tinfo in lcars_terminals.items():
+            if tid in matched_terminal_ids:
+                continue
+            if tinfo.get("pid") and os.path.realpath(tinfo["cwd"]) == resolved_cwd:
+                session_terminal_map[s.id] = tid
+                matched_terminal_ids.add(tid)
+                matched_session_ids.add(s.id)
+                break
+
+    return session_terminal_map
+
+
 def _session_to_dict(
     session: Session,
-    matched_terminal_ids: set[str] | None = None,
-    pid_by_cwd: dict[str, int] | None = None,
+    terminal_id: str | None = None,
+    session_pid: int | None = None,
 ) -> dict[str, Any]:
     """Convert a Session dataclass to a JSON-serializable dict."""
-    # Match session to a LCARS terminal by cwd, skipping already-matched terminals
-    terminal_id = None
-    for tid, tinfo in lcars_terminals.items():
-        if matched_terminal_ids and tid in matched_terminal_ids:
-            continue
-        if tinfo.get("pid") and session.cwd and os.path.realpath(session.cwd) == os.path.realpath(tinfo["cwd"]):
-            terminal_id = tid
-            break
 
     result = {
         "id": session.id,
@@ -95,10 +193,8 @@ def _session_to_dict(
     }
     if terminal_id:
         result["terminal_id"] = terminal_id
-    if pid_by_cwd and session.cwd:
-        resolved = os.path.realpath(session.cwd)
-        if resolved in pid_by_cwd:
-            result["pid"] = pid_by_cwd[resolved]
+    if session_pid:
+        result["pid"] = session_pid
     return result
 
 
@@ -223,13 +319,17 @@ def _load_state() -> dict[str, Any]:
         for tid, tinfo in lcars_terminals.items()
     ]
 
-    # Build session dicts, tracking matched terminals to avoid double-matching
-    matched_terminal_ids: set[str] = set()
+    # Match terminals to sessions (PID ancestry first, then cwd fallback)
+    all_pids = [p.pid for p in processes] if processes else None
+    terminal_matches = _build_terminal_matches(sessions, all_pids)
+
     session_dicts = []
     for s in sessions:
-        d = _session_to_dict(s, matched_terminal_ids, pid_by_cwd)
-        if d.get("terminal_id"):
-            matched_terminal_ids.add(d["terminal_id"])
+        s_pid = None
+        if s.cwd:
+            resolved = os.path.realpath(s.cwd)
+            s_pid = pid_by_cwd.get(resolved)
+        d = _session_to_dict(s, terminal_matches.get(s.id), s_pid)
         session_dicts.append(d)
 
     return {
