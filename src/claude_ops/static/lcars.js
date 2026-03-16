@@ -753,6 +753,7 @@
     renderAgents(mergedSessions);
     renderActivityFeed(state.events || []);
     updatePanelLayout();
+    updateWaveformData(state);
   }
 
   // ---------------------------------------------------------------------------
@@ -844,6 +845,113 @@
   }
 
   // ---------------------------------------------------------------------------
+  // Processing Waveform Visualisation
+  // ---------------------------------------------------------------------------
+
+  let waveformCanvas = null;
+  let waveformCtx = null;
+  let waveformAnimId = null;
+  let waveformData = { amplitude: 0, frequency: 1 };
+  let lastFrameTime = 0;
+  const TARGET_FRAME_MS = 1000 / 30; // 30fps
+
+  function initWaveform() {
+    waveformCanvas = document.getElementById('waveform-canvas');
+    if (!waveformCanvas) return;
+    waveformCtx = waveformCanvas.getContext('2d');
+    resizeWaveform();
+    window.addEventListener('resize', resizeWaveform);
+    waveformAnimId = requestAnimationFrame(drawWaveform);
+  }
+
+  function resizeWaveform() {
+    if (!waveformCanvas) return;
+    const rect = waveformCanvas.parentElement.getBoundingClientRect();
+    waveformCanvas.width = rect.width;
+    waveformCanvas.height = rect.height - 28; // subtract section bar
+  }
+
+  function updateWaveformData(state) {
+    if (!state || !state.sessions) {
+      waveformData.amplitude = 0;
+      waveformData.frequency = 1;
+      return;
+    }
+    const activeSessions = (state.sessions || []).filter(s => s.status === 'active');
+    const totalTokens = activeSessions.reduce((sum, s) => {
+      const tc = s.token_counts || {};
+      return sum + (tc.input || 0) + (tc.output || 0);
+    }, 0);
+    // Normalise: amplitude 0-1 based on token count (log scale)
+    waveformData.amplitude = totalTokens > 0 ? Math.min(1, Math.log10(totalTokens) / 7) : 0;
+    waveformData.frequency = Math.max(1, activeSessions.length * 2);
+  }
+
+  function drawWaveform(timestamp) {
+    waveformAnimId = requestAnimationFrame(drawWaveform);
+
+    // Throttle to target FPS
+    if (timestamp - lastFrameTime < TARGET_FRAME_MS) return;
+    lastFrameTime = timestamp;
+
+    const ctx = waveformCtx;
+    const w = waveformCanvas.width;
+    const h = waveformCanvas.height;
+    if (!ctx || w === 0 || h === 0) return;
+
+    ctx.clearRect(0, 0, w, h);
+
+    const amp = waveformData.amplitude;
+    const freq = waveformData.frequency;
+    const midY = h / 2;
+    const maxAmp = midY * 0.8;
+    const t = timestamp / 1000;
+
+    // Draw subtle grid (Trek-style sensor display)
+    ctx.strokeStyle = 'rgba(144, 160, 208, 0.08)';
+    ctx.lineWidth = 0.5;
+    for (let gy = 0; gy < h; gy += 20) {
+      ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(w, gy); ctx.stroke();
+    }
+    for (let gx = 0; gx < w; gx += 40) {
+      ctx.beginPath(); ctx.moveTo(gx, 0); ctx.lineTo(gx, h); ctx.stroke();
+    }
+
+    // Draw waveform
+    const gradient = ctx.createLinearGradient(0, midY - maxAmp, 0, midY + maxAmp);
+    gradient.addColorStop(0, '#F0A07A');
+    gradient.addColorStop(0.5, '#FFCC99');
+    gradient.addColorStop(1, '#F0A07A');
+
+    ctx.strokeStyle = gradient;
+    ctx.lineWidth = amp > 0.01 ? 2 : 1;
+    ctx.globalAlpha = amp > 0.01 ? 0.8 : 0.3;
+
+    ctx.beginPath();
+    for (let x = 0; x < w; x++) {
+      const xNorm = x / w * Math.PI * 2 * freq;
+      // Composite wave: main + harmonic + noise
+      const wave = Math.sin(xNorm + t * 2) * 0.6
+        + Math.sin(xNorm * 2.3 + t * 3.1) * 0.25
+        + Math.sin(xNorm * 5.7 + t * 1.7) * 0.15;
+      const baseAmp = amp > 0.01 ? amp : 0.05; // idle hum
+      const y = midY + wave * maxAmp * baseAmp;
+      if (x === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+
+    // Glow pass — redraw with shadow for luminous effect
+    ctx.save();
+    ctx.shadowColor = '#FFCC99';
+    ctx.shadowBlur = amp > 0.01 ? 8 : 3;
+    ctx.stroke();
+    ctx.restore();
+
+    ctx.globalAlpha = 1;
+  }
+
+  // ---------------------------------------------------------------------------
   // Initialization
   // ---------------------------------------------------------------------------
 
@@ -854,6 +962,7 @@
     updateClock();
     setInterval(updateClock, 1000);
     connect();
+    initWaveform();
   }
 
   // Boot when DOM is ready
