@@ -552,7 +552,9 @@
       return;
     }
 
-    // When a pending terminal gets matched to a real session, transfer selection
+    // When a pending terminal gets matched to a real session, transfer selection.
+    // Don't clear pendingTerminalSelect until the session is active/idle — it may
+    // briefly appear as 'done' before the process watcher detects it.
     if (pendingTerminalSelect) {
       var matchingSession = sessions.find(function (s) {
         return s.terminal_id === pendingTerminalSelect;
@@ -563,7 +565,10 @@
         if (selectedSessionId === syntheticId) {
           selectedSessionId = matchingSession.id;
         }
-        pendingTerminalSelect = null;
+        // Only clear pending once the session is actually running
+        if (matchingSession.status === 'active' || matchingSession.status === 'idle') {
+          pendingTerminalSelect = null;
+        }
       }
     }
 
@@ -571,8 +576,11 @@
     var activeSessions = sessions.filter(function (s) { return s.status === 'active' || s.status === 'idle'; });
     var completedSessions = sessions.filter(function (s) { return s.status === 'done'; });
 
-    // Auto-select first active session if none selected
-    if (!selectedSessionId || !sessions.find(function (s) { return s.id === selectedSessionId; })) {
+    // Auto-select first active session if none selected.
+    // Don't override selection if we have an active terminal connection.
+    var selectedExists = sessions.find(function (s) { return s.id === selectedSessionId; });
+    var hasActiveTerminal = activeTerminalId && terminals.has(activeTerminalId);
+    if ((!selectedSessionId || !selectedExists) && !hasActiveTerminal) {
       selectedSessionId = (activeSessions[0] || sessions[0] || {}).id;
     }
 
@@ -891,12 +899,20 @@
   function detectChanges(prev, curr) {
     if (!prev) return;
 
+    // Collect terminal_ids we're waiting on — suppress notifications for these
+    var pendingTerminalIds = new Set();
+    if (pendingTerminalSelect) pendingTerminalIds.add(pendingTerminalSelect);
+
+    function isOwnedByPendingTerminal(session) {
+      return session.terminal_id && pendingTerminalIds.has(session.terminal_id);
+    }
+
     const prevSessionIds = new Set((prev.sessions || []).map(s => s.id));
     const currSessionIds = new Set((curr.sessions || []).map(s => s.id));
 
-    // New sessions
+    // New sessions (skip sessions we just spawned via terminal)
     for (const session of (curr.sessions || [])) {
-      if (!prevSessionIds.has(session.id)) {
+      if (!prevSessionIds.has(session.id) && !isOwnedByPendingTerminal(session)) {
         sound.newSession();
         showToast(`NEW SESSION: ${formatProject(session.project)}`);
       }
@@ -920,10 +936,12 @@
       }
     }
 
-    // Session completed
+    // Session completed (skip sessions owned by pending terminals — they start as 'done'
+    // briefly before the process is detected)
     const prevStatusMap = new Map((prev.sessions || []).map(s => [s.id, s.status]));
     for (const session of (curr.sessions || [])) {
-      if (session.status === 'done' && prevStatusMap.get(session.id) !== 'done') {
+      if (session.status === 'done' && prevStatusMap.get(session.id) !== 'done'
+          && !isOwnedByPendingTerminal(session)) {
         sound.sessionEnd();
         showToast(`SESSION ENDED: ${formatProject(session.project)}`);
       }
