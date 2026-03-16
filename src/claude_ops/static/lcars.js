@@ -638,11 +638,24 @@
       return bT - aT;
     });
 
-    // Auto-select: if selected session disappeared, find its replacement.
-    var selectedExists = sessions.find(function (s) { return s.id === selectedSessionId; });
-    if (!selectedSessionId || !selectedExists) {
-      // First: check if the active terminal's session exists (synthetic→real handoff)
-      var hasActiveTerminal = activeTerminalId && terminals.has(activeTerminalId);
+    // Auto-select: if selected session disappeared OR is done while a terminal
+    // session is active, transfer selection to the terminal-linked session.
+    var selectedSession = sessions.find(function (s) { return s.id === selectedSessionId; });
+    var hasActiveTerminal = activeTerminalId && terminals.has(activeTerminalId);
+    var needsReselect = !selectedSessionId || !selectedSession;
+
+    // Also reselect if the selected session went "done" but the terminal is
+    // still active — the session ID changed (Claude created a new JSONL file)
+    // and the old session ended while a new one took over the terminal link.
+    if (!needsReselect && hasActiveTerminal && selectedSession.status === 'done'
+        && !selectedSession.terminal_id) {
+      var termLinked = sessions.find(function (s) { return s.terminal_id === activeTerminalId; });
+      if (termLinked && termLinked.id !== selectedSessionId) {
+        needsReselect = true;
+      }
+    }
+
+    if (needsReselect) {
       if (hasActiveTerminal) {
         var termSession = sessions.find(function (s) { return s.terminal_id === activeTerminalId; });
         if (termSession) {
@@ -1152,7 +1165,9 @@
       }
     }
 
-    // Pass 3: for recently-created terminals, link unmatched sessions by cwd.
+    // Pass 3: link unmatched terminals to sessions by cwd.
+    // This handles session ID changes (e.g. Claude creates a new JSONL file
+    // after the first message) where the cached session ID no longer exists.
     // Prefer newest session (by last_activity) when multiple share a cwd.
     var matchedTerminalIds = new Set();
     for (var a = 0; a < sessions.length; a++) {
@@ -1161,7 +1176,6 @@
     for (var j = 0; j < lcarsTerminals.length; j++) {
       var ltid = lcarsTerminals[j].terminal_id;
       if (matchedTerminalIds.has(ltid)) continue;
-      if (!recentlyCreatedTerminals[ltid]) continue;
       var lcwd = lcarsTerminals[j].cwd;
       // Find the newest unmatched session with this cwd
       var bestIdx = -1;
