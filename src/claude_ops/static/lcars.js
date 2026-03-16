@@ -1042,6 +1042,11 @@
    * Terminals that already match a session (by terminal_id) are skipped.
    * Unmatched terminals get synthetic session entries so they appear in the list.
    */
+  // Client-side cache: once a terminal_id is matched to a session, remember it.
+  // This prevents flicker when ps aux briefly doesn't detect the process and
+  // the server drops the terminal_id for one poll cycle.
+  var knownTerminalSessionMap = {}; // terminal_id -> session.id
+
   function mergeTerminalSessions(sessions, lcarsTerminals) {
     if (!lcarsTerminals || lcarsTerminals.length === 0) return sessions;
 
@@ -1049,6 +1054,24 @@
     for (var i = 0; i < sessions.length; i++) {
       if (sessions[i].terminal_id) {
         matchedTerminalIds.add(sessions[i].terminal_id);
+        // Remember this mapping
+        knownTerminalSessionMap[sessions[i].terminal_id] = sessions[i].id;
+      }
+    }
+
+    // Apply cached terminal_id to sessions that lost theirs temporarily
+    var activeTerminalIds = new Set(
+      (lcarsTerminals || []).map(function (t) { return t.terminal_id; })
+    );
+    for (var k = 0; k < sessions.length; k++) {
+      if (!sessions[k].terminal_id) {
+        for (var tid in knownTerminalSessionMap) {
+          if (knownTerminalSessionMap[tid] === sessions[k].id && activeTerminalIds.has(tid)) {
+            sessions[k].terminal_id = tid;
+            matchedTerminalIds.add(tid);
+            break;
+          }
+        }
       }
     }
 
