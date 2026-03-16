@@ -356,9 +356,7 @@ async def websocket_endpoint(websocket: WebSocket):
     try:
         while True:
             try:
-                state = await asyncio.get_event_loop().run_in_executor(
-                    None, _load_state,
-                )
+                state = _load_state()
             except Exception:
                 await asyncio.sleep(WATCH_INTERVAL)
                 continue
@@ -565,7 +563,10 @@ async def terminal_websocket(websocket: WebSocket, terminal_id: str):
 @app.get("/")
 async def index():
     """Serve the LCARS dashboard."""
-    return FileResponse(STATIC_DIR / "index.html")
+    return FileResponse(
+        STATIC_DIR / "index.html",
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+    )
 
 
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")

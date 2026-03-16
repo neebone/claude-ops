@@ -1085,6 +1085,7 @@
   // ---------------------------------------------------------------------------
 
   var wsId = 0; // increments on each connect to invalidate stale close handlers
+  var hasEverConnected = false;
 
   function connect() {
     if (ws) {
@@ -1096,7 +1097,10 @@
 
     ws.addEventListener('open', () => {
       if (myId !== wsId) return; // stale connection
-      showToast('CONNECTED');
+      if (hasEverConnected) {
+        showToast('RECONNECTED');
+      }
+      hasEverConnected = true;
     });
 
     ws.addEventListener('message', (event) => {
@@ -1132,8 +1136,10 @@
 
     ws.addEventListener('close', () => {
       if (myId !== wsId) return; // stale connection, don't reconnect
-      showToast('DISCONNECTED');
-      sound.alert();
+      if (hasEverConnected) {
+        showToast('DISCONNECTED');
+        sound.alert();
+      }
       setTimeout(connect, RECONNECT_DELAY_MS);
     });
 
