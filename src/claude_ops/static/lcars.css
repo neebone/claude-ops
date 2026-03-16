@@ -217,6 +217,7 @@ body {
   overflow: hidden;
   gap: var(--gap);
   background: var(--lcars-bg);
+  position: relative;
 }
 
 .lcars-sidebar-content {
@@ -356,6 +357,8 @@ body {
   color: var(--lcars-bg);
   flex-shrink: 0;
   letter-spacing: 2px;
+  position: relative;
+  overflow: hidden;
 }
 
 .lcars-bg-peach    { background: var(--lcars-peach); }
@@ -430,7 +433,7 @@ body {
   padding: 10px 12px;
   border-left: 5px solid var(--lcars-dim);
   cursor: pointer;
-  transition: background 0.15s;
+  transition: background 0.15s, border-left-color 300ms ease;
   margin-bottom: 2px;
 }
 
@@ -741,4 +744,83 @@ body {
 @media (max-width: 1000px) {
   .lcars-main-top { flex-direction: column; }
   .lcars-sidebar-content { width: 180px; }
+}
+
+/* --------------------------------------------------------------------------
+   Motion System
+   -------------------------------------------------------------------------- */
+
+/* Respect user preference */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Data stream bar — animated line across panel headers */
+.lcars-section-bar::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -100%;
+  width: 60%;
+  height: 100%;
+  background: linear-gradient(90deg,
+    transparent 0%,
+    rgba(255,255,255,0.0) 30%,
+    rgba(255,255,255,0.6) 50%,
+    rgba(255,255,255,0.0) 70%,
+    transparent 100%);
+  opacity: 0.4;
+  animation: dataStream 3s linear infinite;
+  animation-play-state: var(--stream-state, paused);
+}
+
+@keyframes dataStream {
+  from { left: -60%; }
+  to { left: 100%; }
+}
+
+/* Status transitions — smooth colour changes */
+.status-active::before,
+.status-idle::before,
+.status-done::before {
+  transition: color 300ms ease;
+}
+
+/* Content fade-in */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.lcars-detail-row {
+  animation: fadeIn 0.2s ease-out;
+}
+
+/* Activity event flash — brightness pulse on new rows */
+@keyframes eventFlash {
+  0% { background: rgba(240, 160, 122, 0.2); }
+  100% { background: transparent; }
+}
+
+.lcars-event-row:not(.lcars-no-anim) {
+  animation: slideInRight 0.3s ease-out, eventFlash 0.4s ease-out;
+}
+
+/* Scan-line overlay (off by default, toggled via JS class) */
+.lcars-body.scanlines::after {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 1px,
+    rgba(0, 0, 0, 0.08) 1px,
+    rgba(0, 0, 0, 0.08) 2px
+  );
+  pointer-events: none;
+  z-index: 100;
 }
