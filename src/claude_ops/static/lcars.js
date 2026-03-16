@@ -315,13 +315,15 @@
     var session = getSelectedSession();
     var isTerminal = isTerminalSession(session);
 
-    // If we have an active terminal connection, keep showing it even if the
-    // selected session briefly loses its terminal_id (process not yet detected,
-    // or ps aux hiccup). This prevents the panel from flipping to detail view
-    // and back, which the user sees as a "tab jump".
-    var hasActiveTerminal = activeTerminalId && terminals.has(activeTerminalId);
-    if (!isTerminal && hasActiveTerminal) {
-      isTerminal = true;
+    // If the selected session is the one associated with the active terminal
+    // (either the synthetic entry or the real session), keep showing the terminal
+    // panel even if terminal_id flickered off for one poll cycle.
+    if (!isTerminal && activeTerminalId && terminals.has(activeTerminalId)) {
+      var isSyntheticForTerminal = selectedSessionId === 'lcars-' + activeTerminalId;
+      var isKnownTerminalSession = knownTerminalSessionMap[activeTerminalId] === selectedSessionId;
+      if (isSyntheticForTerminal || isKnownTerminalSession) {
+        isTerminal = true;
+      }
     }
 
     if (isTerminal) {
