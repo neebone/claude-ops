@@ -589,26 +589,27 @@
       + '</div>';
   }
 
+  // Track the previous session list key to detect when a full rebuild is needed
+  // vs when we can do an in-place update (prevents DOM teardown flicker in Edge)
+  var lastSessionListKey = '';
+
   function renderSessionList(sessions) {
     if (!sessions || sessions.length === 0) {
       dom.sessionList.innerHTML = '<div class="lcars-empty">NO ACTIVE SESSIONS</div>';
+      lastSessionListKey = '';
       return;
     }
 
     // When a pending terminal gets matched to a real session, transfer selection.
-    // Don't clear pendingTerminalSelect until the session is active/idle — it may
-    // briefly appear as 'done' before the process watcher detects it.
     if (pendingTerminalSelect) {
       var matchingSession = sessions.find(function (s) {
         return s.terminal_id === pendingTerminalSelect;
       });
       if (matchingSession) {
-        // Transfer selection from synthetic lcars-<uuid> to the real session ID
         var syntheticId = 'lcars-' + pendingTerminalSelect;
         if (selectedSessionId === syntheticId) {
           selectedSessionId = matchingSession.id;
         }
-        // Only clear pending once the session is actually running
         if (matchingSession.status === 'active' || matchingSession.status === 'idle') {
           pendingTerminalSelect = null;
         }
@@ -619,34 +620,105 @@
     var activeSessions = sessions.filter(function (s) { return s.status === 'active' || s.status === 'idle'; });
     var completedSessions = sessions.filter(function (s) { return s.status === 'done'; });
 
-    // Auto-select first active session if none selected.
-    // Don't override selection if we have an active terminal connection.
+    // Promote terminal-linked sessions to top (same position synthetics had)
+    activeSessions.sort(function (a, b) {
+      var aT = a.terminal_id ? 1 : 0;
+      var bT = b.terminal_id ? 1 : 0;
+      return bT - aT;
+    });
+
+    // Auto-select: if selected session disappeared, find its replacement.
     var selectedExists = sessions.find(function (s) { return s.id === selectedSessionId; });
-    var hasActiveTerminal = activeTerminalId && terminals.has(activeTerminalId);
-    if ((!selectedSessionId || !selectedExists) && !hasActiveTerminal) {
-      selectedSessionId = (activeSessions[0] || sessions[0] || {}).id;
+    if (!selectedSessionId || !selectedExists) {
+      // First: check if the active terminal's session exists (synthetic→real handoff)
+      var hasActiveTerminal = activeTerminalId && terminals.has(activeTerminalId);
+      if (hasActiveTerminal) {
+        var termSession = sessions.find(function (s) { return s.terminal_id === activeTerminalId; });
+        if (termSession) {
+          selectedSessionId = termSession.id;
+        } else {
+          selectedSessionId = (activeSessions[0] || sessions[0] || {}).id;
+        }
+      } else {
+        selectedSessionId = (activeSessions[0] || sessions[0] || {}).id;
+      }
     }
 
-    // Render active sessions
-    var html = activeSessions.map(function (session) { return renderSessionCard(session); }).join('');
+    // Build a structural key: session IDs + statuses + selection.
+    // Only do a full DOM rebuild when the list structure changes (add/remove/reorder).
+    // For data-only changes (cost, duration), update cards in-place.
+    var allSessions = activeSessions.concat(completedSessions);
+    var structKey = allSessions.map(function (s) { return s.id + ':' + s.status; }).join(',')
+      + '|' + selectedSessionId + '|' + completedSessions.length;
 
-    // Render completed section if any
-    if (completedSessions.length > 0) {
-      html += '<div class="lcars-session-divider" id="completed-divider">'
-        + 'COMPLETED (' + completedSessions.length + ')'
-        + '</div>'
-        + '<div class="lcars-completed-zone' + (completedCollapsed ? ' collapsed' : '') + '" id="completed-zone">'
-        + completedSessions.map(function (s) {
-            return '<div class="lcars-completed-item" data-session-id="' + s.id + '">'
-              + '<span>' + formatProject(s.project) + '</span>'
-              + '<span>' + formatCost(s.cost_usd) + '</span>'
-              + '</div>';
-          }).join('')
-        + '</div>';
+    if (structKey !== lastSessionListKey) {
+      // Full rebuild — structure changed
+      lastSessionListKey = structKey;
+      var html = activeSessions.map(function (session) { return renderSessionCard(session); }).join('');
+
+      if (completedSessions.length > 0) {
+        html += '<div class="lcars-session-divider" id="completed-divider">'
+          + 'COMPLETED (' + completedSessions.length + ')'
+          + '</div>'
+          + '<div class="lcars-completed-zone' + (completedCollapsed ? ' collapsed' : '') + '" id="completed-zone">'
+          + completedSessions.map(function (s) {
+              return '<div class="lcars-completed-item" data-session-id="' + s.id + '">'
+                + '<span>' + formatProject(s.project) + '</span>'
+                + '<span>' + formatCost(s.cost_usd) + '</span>'
+                + '</div>';
+            }).join('')
+          + '</div>';
+      }
+
+      dom.sessionList.innerHTML = html;
+      bindSessionListEvents();
+    } else {
+      // In-place update — only update content of existing cards (no DOM teardown)
+      for (var i = 0; i < activeSessions.length; i++) {
+        var session = activeSessions[i];
+        var card = dom.sessionList.querySelector('[data-session-id="' + session.id + '"]');
+        if (!card) continue;
+
+        // Update meta line (cost, duration change frequently)
+        var meta = card.querySelector('.session-meta');
+        if (meta) {
+          var newMeta = (session.branch || '--') + ' \u00b7 ' + formatDuration(session.start_time) + ' \u00b7 ' + formatCost(session.cost_usd);
+          if (meta.innerHTML !== newMeta) meta.innerHTML = newMeta;
+        }
+
+        // Update agent count
+        var agentDiv = card.querySelector('.session-agents-summary');
+        var agentCount = session.agents ? session.agents.length : 0;
+        if (agentCount > 0) {
+          var agentText = agentCount + ' AGENT' + (agentCount > 1 ? 'S' : '');
+          if (agentDiv) {
+            if (agentDiv.textContent !== agentText) agentDiv.textContent = agentText;
+          } else {
+            var newAgentDiv = document.createElement('div');
+            newAgentDiv.className = 'session-agents-summary';
+            newAgentDiv.textContent = agentText;
+            card.querySelector('.lcars-session-actions').before(newAgentDiv);
+          }
+        } else if (agentDiv) {
+          agentDiv.remove();
+        }
+      }
+
+      // Update completed items (cost only)
+      for (var j = 0; j < completedSessions.length; j++) {
+        var cs = completedSessions[j];
+        var ci = dom.sessionList.querySelector('.lcars-completed-item[data-session-id="' + cs.id + '"]');
+        if (!ci) continue;
+        var costSpan = ci.querySelectorAll('span')[1];
+        if (costSpan) {
+          var newCost = formatCost(cs.cost_usd);
+          if (costSpan.textContent !== newCost) costSpan.textContent = newCost;
+        }
+      }
     }
+  }
 
-    dom.sessionList.innerHTML = html;
-
+  function bindSessionListEvents() {
     // Divider click toggles collapse
     var divider = document.getElementById('completed-divider');
     if (divider) {
