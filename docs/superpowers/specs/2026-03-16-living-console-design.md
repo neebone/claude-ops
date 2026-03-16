@@ -39,7 +39,7 @@ All animations respect `prefers-reduced-motion`.
 - **Status transitions:** Session status changes (active/idle/done) animate via colour fade (300ms ease) on the status dot and card border. No instant colour swaps.
 - **Content transitions:** New data in panels slides in (activity feed rows) or fades in (detail panel values). Duration: 200-300ms.
 - **Scan-line overlay:** Optional subtle CSS scan-line effect on the main content area. Off by default, toggled via footer button. Implemented with repeating-linear-gradient.
-- **Audio-visual sync:** Existing LCARS chirp on events triggers a brief brightness flash on the corresponding activity feed row.
+- **Audio-visual sync:** When a new activity event arrives, the new row in the activity feed gets a brief brightness flash (CSS animation, 400ms). The existing chirp logic in `detectChanges()` fires on new sessions/agents/completions — extend it to also fire on new activity events, and synchronise the chirp with the row's flash animation.
 
 #### 1.3 Processing Visualisation
 
@@ -51,6 +51,7 @@ A Canvas 2D animated waveform panel displaying real-time processing activity.
 - **Colour:** LCARS peach/gold gradient on black background
 - **Position:** Bottom-right panel, sharing space with activity feed (activity 60%, viz 40%)
 - **Performance:** requestAnimationFrame loop, throttled to 30fps. Canvas sized to container.
+- **Fallback:** If Canvas performance is poor (frame time > 33ms consistently), automatically reduce to 15fps. The visualisation is decorative — degraded performance is acceptable.
 
 ### 2. Layout & Information Architecture
 
@@ -94,7 +95,8 @@ Replaces the current flat agent list on the right side of the detail area.
 New horizontal panel between main content and bottom panels.
 
 - One LCARS-style bar gauge per active Claude process
-- Each gauge shows: process label (session slug), CPU % fill bar, RSS memory value
+- PID-to-session mapping: `find_claude_processes()` returns PID + cwd; `match_sessions_status()` already maps cwd to sessions. Extend this to also return the PID-to-session mapping so the resource strip can label each gauge with the session slug. When multiple sessions share a cwd, label with the cwd basename instead.
+- Each gauge shows: process label (session slug or cwd basename), CPU % fill bar, RSS memory value
 - Bar fill colour: green (<50%), amber (50-80%), red (>80%) for CPU
 - Memory shown as text value (e.g. "142 MB")
 - Updates every 5 seconds
@@ -120,17 +122,22 @@ On hover, a session card reveals a small action bar (slides in from right, 150ms
 The detail panel gains a **live event stream** sub-panel:
 - Shows the last 20 tool calls and messages for the selected session
 - Each row: timestamp, type icon (tool/message/agent-spawn), summary (truncated)
-- Updates in real-time from WebSocket per-session event data
+- Uses the existing `EventType` enum (`ToolUse`, `Message`, `AgentSpawn`) and `extract_events()` function
+- Backend filters the existing event list by session ID and includes the last 20 per active session in `session_events`
+- Updates in real-time from WebSocket payload
 - Distinct from the global activity feed — filtered to one session
 - Scrollable, auto-scrolls unless user has scrolled up
 
 #### 3.3 Terminal Tabs
 
+Currently `activeTerminal` is a single object in `lcars.js`. This requires refactoring to a `Map` of terminal instances keyed by terminal ID, with a separate `activeTerminalId` tracking which is displayed.
+
 - Multiple open terminals displayed as tabs above the terminal panel
 - Each tab shows: label ("LCARS Terminal #N" or session name), close button
-- Click tab to switch terminals
+- Click tab to switch: hides current xterm container, shows selected one
 - Active tab highlighted with LCARS accent colour
 - `t` keyboard shortcut spawns a new terminal
+- Terminal xterm instances are kept alive when switching tabs (not destroyed/recreated)
 
 #### 3.4 Keyboard Shortcuts
 
@@ -158,9 +165,13 @@ def get_process_resources(pids: list[int]) -> dict[int, ResourceStats]:
 
 #### 4.2 Agent Tree Construction (parser.py changes)
 
-- Parse `AgentSpawn` events to identify parent-child relationships
-- Agent JSONL files already contain `agentId`; correlate with spawning session's tool_use events
-- New data structure:
+Parent-child relationships are determined by directory nesting:
+- Agent JSONL files live at `<session-id>/subagents/agent-<id>.jsonl`
+- Sub-agents of agents would be at `<session-id>/subagents/agent-<id>/subagents/agent-<child-id>.jsonl`
+- The directory path encodes the hierarchy: each level of `/subagents/` nesting is one level in the tree
+- If a flat structure is all that exists (no nested subagent dirs), the tree is one level deep: session → [agents]
+
+New data structure:
 
 ```python
 @dataclass
@@ -170,6 +181,7 @@ class AgentNode:
 ```
 
 - `discover_sessions()` returns `agent_trees: dict[str, AgentNode]` mapping session IDs to their root agent nodes
+- Tree built by walking the directory structure recursively, matching `subagents/` nesting
 - Flat agent list still available for backward compatibility with TUI
 
 #### 4.3 WebSocket Payload Extension
@@ -187,10 +199,10 @@ Current payload structure extended:
 }
 ```
 
-- `resources`: Per-PID CPU/memory, keyed by PID
+- `resources`: Per-PID CPU/memory, keyed by PID string
 - `agent_trees`: Nested agent hierarchy per session
-- `session_events`: Last 20 events per active session (for inspection panel)
-- Efficiency: only send events newer than a `since` timestamp from the client
+- `session_events`: Last 20 events per active session (for inspection panel), filtered from existing `extract_events()` output
+- Efficiency: server tracks last-sent event index per client connection; only sends new events since last push. No client-to-server protocol change needed — the server maintains this state per WebSocket connection.
 
 #### 4.4 Session Control Endpoint
 
