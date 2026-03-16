@@ -523,7 +523,7 @@
           var syntheticId = 'lcars-' + data.terminal_id;
           selectedSessionId = syntheticId;
           pendingTerminalSelect = data.terminal_id;
-          recentlyCreatedTerminals[data.terminal_id] = Date.now();
+          recentlyCreatedTerminals[data.terminal_id] = { created: Date.now(), cwd: data.cwd || '' };
 
           // Show terminal panel right away so fitAddon has real dimensions
           dom.detailView.style.display = 'none';
@@ -542,7 +542,7 @@
   }
 
   var pendingTerminalSelect = null;
-  var recentlyCreatedTerminals = {}; // terminal_id -> creation timestamp
+  var recentlyCreatedTerminals = {}; // terminal_id -> { created: timestamp, cwd: string }
 
   // ---------------------------------------------------------------------------
   // Render: header stats
@@ -957,14 +957,30 @@
   var TERMINAL_GRACE_MS = 15000; // suppress notifications for 15s after terminal creation
 
   function isRecentTerminalSession(session) {
-    if (!session.terminal_id) return false;
-    var created = recentlyCreatedTerminals[session.terminal_id];
-    if (!created) return false;
-    if (Date.now() - created > TERMINAL_GRACE_MS) {
-      delete recentlyCreatedTerminals[session.terminal_id];
-      return false;
+    // Direct match by terminal_id
+    if (session.terminal_id) {
+      var entry = recentlyCreatedTerminals[session.terminal_id];
+      if (entry) {
+        if (Date.now() - entry.created > TERMINAL_GRACE_MS) {
+          delete recentlyCreatedTerminals[session.terminal_id];
+          return false;
+        }
+        return true;
+      }
     }
-    return true;
+    // Fallback: match by cwd — covers the race where the session appears
+    // before PID ancestry has linked it to a terminal_id
+    if (session.cwd) {
+      for (var tid in recentlyCreatedTerminals) {
+        var e = recentlyCreatedTerminals[tid];
+        if (Date.now() - e.created > TERMINAL_GRACE_MS) {
+          delete recentlyCreatedTerminals[tid];
+          continue;
+        }
+        if (e.cwd && e.cwd === session.cwd) return true;
+      }
+    }
+    return false;
   }
 
   function detectChanges(prev, curr) {

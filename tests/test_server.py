@@ -74,6 +74,8 @@ def test_create_terminal(
     assert resp.status_code == 200
     data = resp.json()
     assert "terminal_id" in data
+    assert "cwd" in data  # resolved cwd for client-side grace matching
+    assert data["cwd"] == "/home/test"
 
     # Should appear in the terminals list
     assert data["terminal_id"] in lcars_terminals

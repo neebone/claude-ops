@@ -422,7 +422,7 @@ async def create_terminal(req: TerminalRequest):
         }
         # Set initial size
         fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
-        return {"terminal_id": terminal_id}
+        return {"terminal_id": terminal_id, "cwd": cwd}
 
 
 @app.delete("/api/terminal/{terminal_id}")
