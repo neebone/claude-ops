@@ -947,20 +947,14 @@
 
   var TERMINAL_GRACE_MS = 15000; // suppress notifications for 15s after terminal creation
 
-  function isRecentTerminalSession(session) {
-    // Direct match by terminal_id
-    if (session.terminal_id) {
-      var entry = recentlyCreatedTerminals[session.terminal_id];
-      if (entry) {
-        if (Date.now() - entry.created > TERMINAL_GRACE_MS) {
-          delete recentlyCreatedTerminals[session.terminal_id];
-          return false;
-        }
-        return true;
-      }
+  function isOurTerminalSession(session) {
+    // Check if session is linked to one of our terminals via the cache
+    // (persists for page lifetime — no grace period expiry)
+    if (session.terminal_id && knownTerminalSessionMap[session.terminal_id]) {
+      return true;
     }
-    // Fallback: match by cwd — covers the race where the session appears
-    // before PID ancestry has linked it to a terminal_id
+    // Fallback for the first few seconds before stabiliseTerminalState links them:
+    // match by cwd against recently-created terminals
     if (session.cwd) {
       for (var tid in recentlyCreatedTerminals) {
         var e = recentlyCreatedTerminals[tid];
@@ -981,7 +975,7 @@
 
     // New sessions (skip sessions we just spawned via terminal)
     for (const session of (curr.sessions || [])) {
-      if (!prevSessionIds.has(session.id) && !isRecentTerminalSession(session)) {
+      if (!prevSessionIds.has(session.id) && !isOurTerminalSession(session)) {
         sound.newSession();
         showToast(`NEW SESSION: ${formatProject(session.project)}`);
       }
@@ -1010,7 +1004,7 @@
     const prevStatusMap = new Map((prev.sessions || []).map(s => [s.id, s.status]));
     for (const session of (curr.sessions || [])) {
       if (session.status === 'done' && prevStatusMap.get(session.id) !== 'done'
-          && !isRecentTerminalSession(session)) {
+          && !isOurTerminalSession(session)) {
         sound.sessionEnd();
         showToast(`SESSION ENDED: ${formatProject(session.project)}`);
       }
@@ -1033,62 +1027,100 @@
    * Terminals that already match a session (by terminal_id) are skipped.
    * Unmatched terminals get synthetic session entries so they appear in the list.
    */
-  // Client-side terminal→session link cache. Once a link is established (by
-  // server terminal_id OR by cwd match to a recently created terminal), it
-  // persists for the lifetime of the page. This is the single source of truth
-  // for "which session belongs to which terminal" — the server's terminal_id
-  // is unreliable because ps aux can miss processes between polls.
+  // Client-side terminal→session link cache. Once a link is established,
+  // it persists for the page lifetime. This is the single source of truth —
+  // the server's terminal_id is unreliable because ps aux can miss processes.
   var knownTerminalSessionMap = {}; // terminal_id -> session.id
 
-  function mergeTerminalSessions(sessions, lcarsTerminals) {
-    if (!lcarsTerminals || lcarsTerminals.length === 0) return sessions;
+  /**
+   * Stabilise terminal state BEFORE change detection or rendering.
+   * Mutates state.sessions in-place to restore cached terminal_id links
+   * and correct status flicker (done → idle for active terminal sessions).
+   */
+  function stabiliseTerminalState(state) {
+    var sessions = state.sessions || [];
+    var lcarsTerminals = state.lcars_terminals || [];
+    if (lcarsTerminals.length === 0) return;
 
-    // Build lookup of active terminal cwds
-    var terminalByCwd = {}; // cwd -> terminal_id
+    // Build lookup of active terminal IDs and cwds
     var activeTerminalIds = new Set();
+    var terminalCwdMap = {}; // cwd -> terminal_id (one terminal per cwd)
     for (var ti = 0; ti < lcarsTerminals.length; ti++) {
-      terminalByCwd[lcarsTerminals[ti].cwd] = lcarsTerminals[ti].terminal_id;
       activeTerminalIds.add(lcarsTerminals[ti].terminal_id);
+      terminalCwdMap[lcarsTerminals[ti].cwd] = lcarsTerminals[ti].terminal_id;
     }
 
-    var matchedTerminalIds = new Set();
-
-    // Pass 1: adopt server-provided terminal_id links
+    // Pass 1: adopt server-provided terminal_id links into cache
+    // (only for terminals that are still active)
     for (var i = 0; i < sessions.length; i++) {
-      if (sessions[i].terminal_id) {
-        matchedTerminalIds.add(sessions[i].terminal_id);
+      if (sessions[i].terminal_id && activeTerminalIds.has(sessions[i].terminal_id)) {
         knownTerminalSessionMap[sessions[i].terminal_id] = sessions[i].id;
       }
     }
 
     // Pass 2: restore cached links for sessions that lost terminal_id
     for (var k = 0; k < sessions.length; k++) {
-      if (!sessions[k].terminal_id) {
-        for (var tid in knownTerminalSessionMap) {
-          if (knownTerminalSessionMap[tid] === sessions[k].id && activeTerminalIds.has(tid)) {
-            sessions[k].terminal_id = tid;
-            matchedTerminalIds.add(tid);
-            break;
-          }
+      if (sessions[k].terminal_id) continue;
+      for (var tid in knownTerminalSessionMap) {
+        if (knownTerminalSessionMap[tid] === sessions[k].id && activeTerminalIds.has(tid)) {
+          sessions[k].terminal_id = tid;
+          break;
         }
       }
     }
 
-    // Pass 3: for still-unmatched terminals that were recently created,
-    // link to any unmatched session with the same cwd (proactive cwd match).
-    // This catches the very first poll where the server hasn't done PID ancestry yet.
-    for (var m = 0; m < sessions.length; m++) {
-      if (sessions[m].terminal_id) continue;
-      if (!sessions[m].cwd) continue;
-      var cwdTid = terminalByCwd[sessions[m].cwd];
-      if (!cwdTid || matchedTerminalIds.has(cwdTid)) continue;
-      if (!recentlyCreatedTerminals[cwdTid]) continue; // only for our terminals
-      sessions[m].terminal_id = cwdTid;
-      matchedTerminalIds.add(cwdTid);
-      knownTerminalSessionMap[cwdTid] = sessions[m].id;
+    // Pass 3: for recently-created terminals, link unmatched sessions by cwd.
+    // Prefer newest session (by last_activity) when multiple share a cwd.
+    var matchedTerminalIds = new Set();
+    for (var a = 0; a < sessions.length; a++) {
+      if (sessions[a].terminal_id) matchedTerminalIds.add(sessions[a].terminal_id);
+    }
+    for (var j = 0; j < lcarsTerminals.length; j++) {
+      var ltid = lcarsTerminals[j].terminal_id;
+      if (matchedTerminalIds.has(ltid)) continue;
+      if (!recentlyCreatedTerminals[ltid]) continue;
+      var lcwd = lcarsTerminals[j].cwd;
+      // Find the newest unmatched session with this cwd
+      var bestIdx = -1;
+      var bestTime = '';
+      for (var m = 0; m < sessions.length; m++) {
+        if (sessions[m].terminal_id) continue;
+        if (sessions[m].cwd !== lcwd) continue;
+        var t = sessions[m].last_activity || sessions[m].start_time || '';
+        if (bestIdx === -1 || t > bestTime) {
+          bestIdx = m;
+          bestTime = t;
+        }
+      }
+      if (bestIdx !== -1) {
+        sessions[bestIdx].terminal_id = ltid;
+        matchedTerminalIds.add(ltid);
+        knownTerminalSessionMap[ltid] = sessions[bestIdx].id;
+      }
     }
 
-    // Create synthetic entries for terminals with no session at all
+    // Pass 4: status correction — if a session is linked to an active terminal
+    // but server says "done", override to "idle" (ps aux just missed it)
+    for (var s = 0; s < sessions.length; s++) {
+      if (sessions[s].terminal_id && activeTerminalIds.has(sessions[s].terminal_id)
+          && sessions[s].status === 'done') {
+        sessions[s].status = 'idle';
+      }
+    }
+  }
+
+  /**
+   * Create synthetic session entries for terminals with no linked session.
+   * Must run AFTER stabiliseTerminalState.
+   */
+  function mergeTerminalSessions(sessions, lcarsTerminals) {
+    if (!lcarsTerminals || lcarsTerminals.length === 0) return sessions;
+
+    var matchedTerminalIds = new Set();
+    for (var i = 0; i < sessions.length; i++) {
+      if (sessions[i].terminal_id) matchedTerminalIds.add(sessions[i].terminal_id);
+    }
+
     var merged = sessions.slice();
     for (var j = 0; j < lcarsTerminals.length; j++) {
       var t = lcarsTerminals[j];
@@ -1169,6 +1201,11 @@
       try {
         previousState = currentState;
         currentState = msg;
+
+        // Stabilise BEFORE change detection — restores cached terminal_id
+        // links and corrects status flicker. Mutates msg.sessions in-place,
+        // so stateKey (computed below from msg.sessions) reflects stable state.
+        stabiliseTerminalState(currentState);
 
         detectChanges(previousState, currentState);
 
