@@ -630,7 +630,7 @@
         var action = btn.dataset.action;
         if (action === 'kill') {
           var pid = btn.dataset.pid;
-          if (pid) {
+          if (pid && confirm('Terminate session (PID ' + pid + ')?')) {
             fetch('/api/session/' + pid + '/kill', { method: 'POST' })
               .then(function(r) { return r.json(); })
               .then(function(d) {
