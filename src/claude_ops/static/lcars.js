@@ -1104,29 +1104,45 @@
   var timelineHistory = [];
   var TIMELINE_WINDOW_MS = 5 * 60 * 1000; // 5 minute window
 
-  // Tool phase classification
+  // Tool phase classification — keyed on tool name, not summary text
   var PHASE_COLORS = {
-    RESEARCH: '#90A0D0',  // blue — reads, greps, searches
-    BUILD:    '#FFCC99',  // gold — edits, writes
-    TEST:     '#80D090',  // green — bash/test runs
+    RESEARCH: '#90A0D0',  // blue — reading, searching codebase
+    BUILD:    '#FFCC99',  // gold — editing, writing files
+    EXECUTE:  '#80D090',  // green — running commands
+    COMMS:    '#C0A0C0',  // lavender — web fetch, search, external
     IDLE:     '#707898',  // dim — no recent tools
   };
 
+  var TOOL_PHASE_MAP = {
+    'Read': 'RESEARCH', 'Grep': 'RESEARCH', 'Glob': 'RESEARCH',
+    'Agent': 'RESEARCH', 'ListMcpResourcesTool': 'RESEARCH',
+    'Edit': 'BUILD', 'Write': 'BUILD', 'NotebookEdit': 'BUILD',
+    'Bash': 'EXECUTE',
+    'WebSearch': 'COMMS', 'WebFetch': 'COMMS',
+  };
+
+  function extractToolName(summary) {
+    // Summary format is "ToolName(args)" or just "ToolName"
+    var paren = summary.indexOf('(');
+    return paren > 0 ? summary.substring(0, paren) : summary;
+  }
+
   function classifyPhase(events) {
     if (!events || events.length === 0) return 'IDLE';
-    // Look at last 5 events to determine current phase
-    var recent = events.slice(-5);
-    var types = recent.map(function(e) { return (e.event_type || '').toLowerCase(); });
-    var summaries = recent.map(function(e) { return (e.summary || '').toLowerCase(); });
+    // Look at last 5 tool_use events to determine current phase
+    var toolEvents = events.filter(function(e) {
+      return (e.event_type || '').toLowerCase() === 'tool_use';
+    }).slice(-5);
+    if (toolEvents.length === 0) return 'IDLE';
 
-    var hasEdit = types.some(function(t) { return t === 'tool_use'; }) &&
-      summaries.some(function(s) { return s.indexOf('edit') >= 0 || s.indexOf('write') >= 0; });
-    var hasBash = summaries.some(function(s) { return s.indexOf('bash') >= 0 || s.indexOf('test') >= 0 || s.indexOf('pytest') >= 0; });
-    var hasRead = summaries.some(function(s) { return s.indexOf('read') >= 0 || s.indexOf('grep') >= 0 || s.indexOf('glob') >= 0; });
-
-    if (hasBash) return 'TEST';
-    if (hasEdit) return 'BUILD';
-    if (hasRead) return 'RESEARCH';
+    // Most recent tool wins for the phase
+    for (var i = toolEvents.length - 1; i >= 0; i--) {
+      var toolName = extractToolName(toolEvents[i].summary || '');
+      // Check direct match first
+      if (TOOL_PHASE_MAP[toolName]) return TOOL_PHASE_MAP[toolName];
+      // Check MCP tools (mcp__* prefix)
+      if (toolName.indexOf('mcp__') === 0) return 'COMMS';
+    }
     return 'IDLE';
   }
 
@@ -1331,7 +1347,7 @@
     var legendY = topPad;
     ctx.font = '9px Antonio, sans-serif';
     ctx.textAlign = 'left';
-    var phases = ['RESEARCH', 'BUILD', 'TEST', 'IDLE'];
+    var phases = ['RESEARCH', 'BUILD', 'EXECUTE', 'COMMS', 'IDLE'];
     for (var pi = 0; pi < phases.length; pi++) {
       var py = legendY + pi * 14;
       ctx.fillStyle = PHASE_COLORS[phases[pi]];
