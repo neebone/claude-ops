@@ -53,6 +53,7 @@
   let soundEnabled = false;
   let audioCtx = null;
   let userScrolledUp = false;
+  let completedCollapsed = true;
   let renderedEventKeys = new Set();
 
   // Terminal state
@@ -85,6 +86,8 @@
     dom.panelTerminal = document.getElementById('panel-terminal');
     dom.terminalContainer = document.getElementById('terminal-container');
     dom.detailView = document.getElementById('detail-view');
+    dom.resourceStrip = document.getElementById('resource-strip');
+    dom.statTokens = document.getElementById('stat-tokens');
   }
 
   // ---------------------------------------------------------------------------
@@ -455,11 +458,39 @@
     dom.statIdle.textContent = `${idle} idle`;
     dom.statAgents.textContent = `${agents} agents`;
     dom.statCost.textContent = formatCost(totalCost);
+
+    var totalTokens = sessions.reduce(function (n, s) {
+      var tc = s.token_counts || {};
+      return n + (tc.input || 0) + (tc.output || 0) + (tc.cache_read || 0) + (tc.cache_write || 0);
+    }, 0);
+    if (dom.statTokens) dom.statTokens.textContent = formatTokens(totalTokens) + ' tokens';
   }
 
   // ---------------------------------------------------------------------------
   // Render: session list
   // ---------------------------------------------------------------------------
+
+  function renderSessionCard(session) {
+    var color = sessionColor(session.slug);
+    var selected = session.id === selectedSessionId ? ' selected' : '';
+    var agentCount = session.agents ? session.agents.length : 0;
+    var agentLine = agentCount > 0
+      ? '<div class="session-agents-summary">' + agentCount + ' AGENT' + (agentCount > 1 ? 'S' : '') + '</div>'
+      : '';
+    var lcarsBadge = session.terminal_id
+      ? '<span class="lcars-badge">LCARS</span>'
+      : '';
+
+    return '<div class="lcars-session-item' + selected + '" data-session-id="' + session.id + '" style="border-left-color: ' + color + '">'
+      + '<div class="session-name">'
+      + '<span class="status-' + session.status + '" title="' + session.status + '"></span> '
+      + formatProject(session.project)
+      + ' ' + lcarsBadge
+      + '</div>'
+      + '<div class="session-meta">' + (session.branch || '--') + ' &middot; ' + formatDuration(session.start_time) + ' &middot; ' + formatCost(session.cost_usd) + '</div>'
+      + agentLine
+      + '</div>';
+  }
 
   function renderSessionList(sessions) {
     if (!sessions || sessions.length === 0) {
@@ -478,44 +509,51 @@
       }
     }
 
-    // Auto-select the first session if none selected or selected no longer exists
-    if (!selectedSessionId || !sessions.find(s => s.id === selectedSessionId)) {
-      selectedSessionId = sessions[0].id;
+    // Split into active and completed
+    var activeSessions = sessions.filter(function (s) { return s.status === 'active' || s.status === 'idle'; });
+    var completedSessions = sessions.filter(function (s) { return s.status === 'done'; });
+
+    // Auto-select first active session if none selected
+    if (!selectedSessionId || !sessions.find(function (s) { return s.id === selectedSessionId; })) {
+      selectedSessionId = (activeSessions[0] || sessions[0] || {}).id;
     }
 
-    dom.sessionList.innerHTML = sessions.map(session => {
-      const color = sessionColor(session.slug);
-      const selected = session.id === selectedSessionId ? ' selected' : '';
-      const agentCount = session.agents ? session.agents.length : 0;
-      const agentLine = agentCount > 0
-        ? `<div class="session-agents-summary">${agentCount} AGENT${agentCount > 1 ? 'S' : ''}</div>`
-        : '';
-      const lcarsBadge = session.terminal_id
-        ? '<span class="lcars-badge">LCARS</span>'
-        : '';
+    // Render active sessions
+    var html = activeSessions.map(function (session) { return renderSessionCard(session); }).join('');
 
-      return `
-        <div class="lcars-session-item${selected}" data-session-id="${session.id}" style="border-left-color: ${color}">
-          <div class="session-name">
-            <span class="status-${session.status}" title="${session.status}"></span>
-            ${formatProject(session.project)}
-            ${lcarsBadge}
-          </div>
-          <div class="session-meta">${session.branch || '--'} &middot; ${formatDuration(session.start_time)} &middot; ${formatCost(session.cost_usd)}</div>
-          ${agentLine}
-        </div>
-      `;
-    }).join('');
+    // Render completed section if any
+    if (completedSessions.length > 0) {
+      html += '<div class="lcars-session-divider" id="completed-divider">'
+        + 'COMPLETED (' + completedSessions.length + ')'
+        + '</div>'
+        + '<div class="lcars-completed-zone' + (completedCollapsed ? ' collapsed' : '') + '" id="completed-zone">'
+        + completedSessions.map(function (s) {
+            return '<div class="lcars-completed-item" data-session-id="' + s.id + '">'
+              + '<span>' + formatProject(s.project) + '</span>'
+              + '<span>' + formatCost(s.cost_usd) + '</span>'
+              + '</div>';
+          }).join('')
+        + '</div>';
+    }
 
-    // Attach click handlers
-    dom.sessionList.querySelectorAll('.lcars-session-item').forEach(el => {
-      el.addEventListener('click', () => {
+    dom.sessionList.innerHTML = html;
+
+    // Divider click toggles collapse
+    var divider = document.getElementById('completed-divider');
+    if (divider) {
+      divider.addEventListener('click', function () {
+        completedCollapsed = !completedCollapsed;
+        var zone = document.getElementById('completed-zone');
+        if (zone) zone.classList.toggle('collapsed', completedCollapsed);
+      });
+    }
+
+    // Click handlers for both active cards and completed items
+    dom.sessionList.querySelectorAll('.lcars-session-item, .lcars-completed-item').forEach(function (el) {
+      el.addEventListener('click', function () {
         sound.click();
         selectedSessionId = el.dataset.sessionId;
-        renderSessionList(mergedSessions);
-        renderSessionDetail(mergedSessions);
-        renderAgents(mergedSessions);
-        updatePanelLayout();
+        render(currentState);
       });
     });
   }
@@ -554,6 +592,32 @@
   }
 
   // ---------------------------------------------------------------------------
+  // Render: resource strip
+  // ---------------------------------------------------------------------------
+
+  function renderResourceStrip(resources) {
+    if (!dom.resourceStrip) return;
+    if (!resources || Object.keys(resources).length === 0) {
+      dom.resourceStrip.innerHTML = '';
+      return;
+    }
+
+    dom.resourceStrip.innerHTML = Object.entries(resources).map(function ([pid, stats]) {
+      var cpuColor = stats.cpu_pct > 80 ? 'var(--lcars-red)'
+        : stats.cpu_pct > 50 ? 'var(--lcars-yellow)'
+        : 'var(--lcars-green)';
+      var cpuWidth = Math.min(100, Math.max(2, stats.cpu_pct));
+      return '<div class="lcars-resource-gauge">'
+        + '<span class="gauge-label">' + truncate(stats.label || pid, 12) + '</span>'
+        + '<div class="gauge-bar">'
+        + '<div class="gauge-fill" style="width: ' + cpuWidth + '%; background: ' + cpuColor + '"></div>'
+        + '</div>'
+        + '<span class="gauge-value">' + stats.cpu_pct.toFixed(0) + '% ' + stats.rss_mb.toFixed(0) + 'MB</span>'
+        + '</div>';
+    }).join('');
+  }
+
+  // ---------------------------------------------------------------------------
   // Render: agents panel
   // ---------------------------------------------------------------------------
 
@@ -582,6 +646,40 @@
         </div>
       `;
     }).join('');
+  }
+
+  // ---------------------------------------------------------------------------
+  // Render: agent tree
+  // ---------------------------------------------------------------------------
+
+  function renderAgentTree(agentTrees, selectedId) {
+    if (!dom.agentsPanel) return;
+    var nodes = agentTrees ? agentTrees[selectedId] : null;
+    if (!nodes || nodes.length === 0) {
+      // Fall back to flat renderAgents if no tree data
+      return;
+    }
+
+    function renderNode(node, depth) {
+      var a = node.agent;
+      var shortId = (a.id || '').slice(0, 8);
+      var model = shortModelName(a.model);
+      var tc = a.token_counts || {};
+      var indent = depth * 16;
+      var childrenHtml = (node.children || []).map(function (c) { return renderNode(c, depth + 1); }).join('');
+
+      return '<div class="lcars-agent-card" style="margin-left: ' + indent + 'px;' + (depth > 0 ? ' border-left-color: var(--lcars-blue);' : '') + '">'
+        + '<div>'
+        + '<span class="status-' + a.status + '"></span> '
+        + '<strong>' + shortId + '</strong> &middot; ' + (model || '').toUpperCase()
+        + '</div>'
+        + '<div class="session-meta">' + formatDuration(a.start_time) + ' &middot; ' + formatTokens(tc.input) + ' IN / ' + formatTokens(tc.output) + ' OUT &middot; ' + formatCost(a.cost_usd) + '</div>'
+        + '<div class="session-meta">' + truncate(a.task_summary, 60) + '</div>'
+        + '</div>'
+        + childrenHtml;
+    }
+
+    dom.agentsPanel.innerHTML = nodes.map(function (n) { return renderNode(n, 0); }).join('');
   }
 
   // ---------------------------------------------------------------------------
@@ -751,9 +849,18 @@
     renderSessionList(mergedSessions);
     renderSessionDetail(mergedSessions);
     renderAgents(mergedSessions);
+    renderAgentTree(state.agent_trees, selectedSessionId);
     renderActivityFeed(state.events || []);
+    renderResourceStrip(state.resources);
     updatePanelLayout();
     updateWaveformData(state);
+
+    // Activate data stream animation when data is flowing
+    var body = document.querySelector('.lcars-body');
+    if (body) {
+      var hasActive = mergedSessions.some(function (s) { return s.status === 'active'; });
+      body.style.setProperty('--stream-state', hasActive ? 'running' : 'paused');
+    }
   }
 
   // ---------------------------------------------------------------------------
