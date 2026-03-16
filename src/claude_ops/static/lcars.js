@@ -741,6 +741,33 @@
   }
 
   // ---------------------------------------------------------------------------
+  // Render: session events
+  // ---------------------------------------------------------------------------
+
+  function renderSessionEvents(sessionEvents, selectedId) {
+    if (!dom.sessionDetail) return;
+    var events = sessionEvents ? sessionEvents[selectedId] : null;
+    if (!events || events.length === 0) return;
+
+    // Append event stream section to session detail
+    var streamHtml = '<div style="margin: 12px 0 8px; border-top: 1px solid rgba(255,255,255,0.08);"></div>'
+      + '<div style="font-size: 11px; color: var(--lcars-lavender); text-transform: uppercase; letter-spacing: 1.5px; margin-bottom: 6px;">Recent Activity</div>'
+      + '<div class="lcars-session-events">';
+
+    for (var i = 0; i < events.length; i++) {
+      var evt = events[i];
+      streamHtml += '<div class="lcars-event-row lcars-no-anim" style="padding: 2px 0; font-size: 11px;">'
+        + '<span class="event-time">' + formatTime(evt.timestamp) + '</span> '
+        + '<span class="event-type" style="min-width: 60px; display: inline-block;">' + (evt.event_type || '--') + '</span> '
+        + '<span class="event-summary">' + truncate(evt.summary, 60) + '</span>'
+        + '</div>';
+    }
+
+    streamHtml += '</div>';
+    dom.sessionDetail.insertAdjacentHTML('beforeend', streamHtml);
+  }
+
+  // ---------------------------------------------------------------------------
   // Render: activity feed
   // ---------------------------------------------------------------------------
 
@@ -913,6 +940,7 @@
     renderStats(mergedSessions, state.total_cost_usd || 0);
     renderSessionList(mergedSessions);
     renderSessionDetail(mergedSessions);
+    renderSessionEvents(state.session_events, selectedSessionId);
     renderAgents(mergedSessions);
     renderAgentTree(state.agent_trees, selectedSessionId);
     renderActivityFeed(state.events || []);
