@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -466,7 +467,8 @@ def discover_sessions(
             if session.last_activity < cutoff:
                 continue
 
-            # Reset agents list to avoid accumulating duplicates on cached sessions
+            # Shallow-copy so we don't mutate the cached Session object
+            session = copy.copy(session)
             session.agents = []
 
             # Look for subagents
