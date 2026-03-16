@@ -1088,6 +1088,87 @@
   }
 
   // ---------------------------------------------------------------------------
+  // Keyboard Shortcuts
+  // ---------------------------------------------------------------------------
+
+  function setupKeyboardShortcuts() {
+    document.addEventListener('keydown', function(e) {
+      // Don't handle shortcuts when typing in inputs or terminal is focused
+      if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+
+      var sessions = mergedSessions || [];
+
+      switch (e.key) {
+        case 'j':
+        case 'ArrowDown': {
+          e.preventDefault();
+          var idx = sessions.findIndex(function(s) { return s.id === selectedSessionId; });
+          if (idx < sessions.length - 1) {
+            selectedSessionId = sessions[idx + 1].id;
+            sound.click();
+            render(currentState);
+          }
+          break;
+        }
+        case 'k':
+        case 'ArrowUp': {
+          e.preventDefault();
+          var idx = sessions.findIndex(function(s) { return s.id === selectedSessionId; });
+          if (idx > 0) {
+            selectedSessionId = sessions[idx - 1].id;
+            sound.click();
+            render(currentState);
+          }
+          break;
+        }
+        case 'Enter': {
+          updatePanelLayout();
+          break;
+        }
+        case 't': {
+          e.preventDefault();
+          if (typeof createNewSession === 'function') createNewSession();
+          break;
+        }
+        case 'Escape': {
+          selectedSessionId = null;
+          render(currentState);
+          break;
+        }
+        case '?': {
+          e.preventDefault();
+          toggleShortcutOverlay();
+          break;
+        }
+      }
+    });
+  }
+
+  function toggleShortcutOverlay() {
+    var overlay = document.getElementById('shortcut-overlay');
+    if (overlay) {
+      overlay.remove();
+      return;
+    }
+    overlay = document.createElement('div');
+    overlay.id = 'shortcut-overlay';
+    overlay.className = 'lcars-shortcut-overlay';
+    overlay.innerHTML = '<div class="lcars-shortcut-panel">'
+      + '<div class="lcars-section-bar lcars-bg-lavender">Keyboard Shortcuts</div>'
+      + '<div class="lcars-shortcut-list">'
+      + '<div><kbd>j</kbd> / <kbd>↓</kbd> — Next session</div>'
+      + '<div><kbd>k</kbd> / <kbd>↑</kbd> — Previous session</div>'
+      + '<div><kbd>Enter</kbd> — Select session</div>'
+      + '<div><kbd>t</kbd> — New terminal</div>'
+      + '<div><kbd>Esc</kbd> — Deselect</div>'
+      + '<div><kbd>?</kbd> — Toggle this overlay</div>'
+      + '</div>'
+      + '</div>';
+    overlay.addEventListener('click', function() { overlay.remove(); });
+    document.body.appendChild(overlay);
+  }
+
+  // ---------------------------------------------------------------------------
   // Initialization
   // ---------------------------------------------------------------------------
 
@@ -1095,6 +1176,7 @@
     cacheDom();
     setupButtons();
     setupScrollTracking();
+    setupKeyboardShortcuts();
     updateClock();
     setInterval(updateClock, 1000);
     connect();

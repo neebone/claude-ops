@@ -1019,3 +1019,48 @@ body {
   font-size: 9px;
   border: 1px solid rgba(255, 255, 255, 0.15);
 }
+
+/* --------------------------------------------------------------------------
+   Keyboard Shortcut Overlay
+   -------------------------------------------------------------------------- */
+.lcars-shortcut-overlay {
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0, 0, 0, 0.85);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2000;
+}
+
+.lcars-shortcut-panel {
+  width: 360px;
+  background: var(--lcars-bg);
+  border: none;
+  border-radius: 0;
+  overflow: hidden;
+}
+
+.lcars-shortcut-panel .lcars-section-bar {
+  border-radius: 0 24px 0 0;
+}
+
+.lcars-shortcut-list {
+  padding: 20px 24px;
+  font-size: 13px;
+  line-height: 2;
+  border-left: 4px solid var(--lcars-lavender);
+  margin-left: 8px;
+}
+
+.lcars-shortcut-list kbd {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 0 6px 6px 0;
+  background: var(--lcars-lavender);
+  color: var(--lcars-dark, #1A1A2E);
+  font-family: 'Courier New', monospace;
+  font-size: 12px;
+  font-weight: 700;
+  margin: 0 2px;
+}
