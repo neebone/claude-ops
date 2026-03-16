@@ -355,7 +355,13 @@ async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     try:
         while True:
-            state = _load_state()
+            try:
+                state = await asyncio.get_event_loop().run_in_executor(
+                    None, _load_state,
+                )
+            except Exception:
+                await asyncio.sleep(WATCH_INTERVAL)
+                continue
             await websocket.send_text(json.dumps(state))
             await asyncio.sleep(WATCH_INTERVAL)
     except WebSocketDisconnect:

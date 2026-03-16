@@ -1084,18 +1084,23 @@
   // WebSocket
   // ---------------------------------------------------------------------------
 
+  var wsId = 0; // increments on each connect to invalidate stale close handlers
+
   function connect() {
     if (ws) {
       try { ws.close(); } catch (_) { /* noop */ }
     }
 
+    var myId = ++wsId;
     ws = new WebSocket(WS_URL);
 
     ws.addEventListener('open', () => {
+      if (myId !== wsId) return; // stale connection
       showToast('CONNECTED');
     });
 
     ws.addEventListener('message', (event) => {
+      if (myId !== wsId) return; // stale connection
       let msg;
       try {
         msg = JSON.parse(event.data);
@@ -1105,23 +1110,28 @@
 
       if (msg.type !== 'state') return;
 
-      previousState = currentState;
-      currentState = msg;
+      try {
+        previousState = currentState;
+        currentState = msg;
 
-      detectChanges(previousState, currentState);
+        detectChanges(previousState, currentState);
 
-      // Always update timeline data and phase detection (not gated by stateKey)
-      updateWaveformData(currentState);
+        // Always update timeline data and phase detection (not gated by stateKey)
+        updateWaveformData(currentState);
 
-      // Skip re-render if data hasn't changed (prevents DOM flicker)
-      var stateKey = JSON.stringify(msg.sessions) + JSON.stringify(msg.events);
-      if (stateKey !== lastStateKey) {
-        lastStateKey = stateKey;
-        render(currentState);
+        // Skip re-render if data hasn't changed (prevents DOM flicker)
+        var stateKey = JSON.stringify(msg.sessions) + JSON.stringify(msg.events);
+        if (stateKey !== lastStateKey) {
+          lastStateKey = stateKey;
+          render(currentState);
+        }
+      } catch (err) {
+        console.error('LCARS render error:', err);
       }
     });
 
     ws.addEventListener('close', () => {
+      if (myId !== wsId) return; // stale connection, don't reconnect
       showToast('DISCONNECTED');
       sound.alert();
       setTimeout(connect, RECONNECT_DELAY_MS);
