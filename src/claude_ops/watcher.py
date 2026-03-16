@@ -74,24 +74,30 @@ def find_claude_processes() -> list[ClaudeProcess] | None:
 def match_sessions_status(
     sessions: list[Session],
     processes: list[ClaudeProcess] | None,
-) -> None:
+) -> dict[int, str] | None:
     """Match sessions to processes by cwd and assign status in-place.
 
-    For each cwd, counts running Claude processes and assigns the N most
-    recently active sessions as active/idle. Remaining sessions are marked done.
+    Returns a mapping of PID -> session slug for labelling resource gauges.
+    When multiple sessions share a cwd, maps PID to cwd basename instead.
+    Returns None if processes is None.
     """
     if processes is None:
         for s in sessions:
             s.status = SessionStatus.UNKNOWN
-        return
+        return None
 
     now = datetime.now(timezone.utc)
 
-    # Count Claude processes per resolved cwd
-    proc_count_by_cwd: dict[str, int] = {}
+    # Group processes by resolved cwd
+    procs_by_cwd: dict[str, list[ClaudeProcess]] = {}
     for proc in processes:
         resolved = os.path.realpath(proc.cwd)
-        proc_count_by_cwd[resolved] = proc_count_by_cwd.get(resolved, 0) + 1
+        procs_by_cwd.setdefault(resolved, []).append(proc)
+
+    # Count per cwd
+    proc_count_by_cwd: dict[str, int] = {
+        cwd: len(procs) for cwd, procs in procs_by_cwd.items()
+    }
 
     # Group sessions by resolved cwd
     sessions_by_cwd: dict[str, list[Session]] = {}
@@ -99,7 +105,9 @@ def match_sessions_status(
         resolved = os.path.realpath(s.cwd) if s.cwd else ""
         sessions_by_cwd.setdefault(resolved, []).append(s)
 
-    # For each cwd, assign the N most recently active sessions as active/idle
+    # Build PID-to-label mapping
+    pid_map: dict[int, str] = {}
+
     for cwd, cwd_sessions in sessions_by_cwd.items():
         n_procs = proc_count_by_cwd.get(cwd, 0)
         if n_procs == 0:
@@ -107,8 +115,11 @@ def match_sessions_status(
                 s.status = SessionStatus.DONE
             continue
 
-        # Sort by last_activity descending — most recent first
         cwd_sessions.sort(key=lambda s: s.last_activity, reverse=True)
+
+        # Determine label: use session slug if 1 session, else cwd basename
+        use_slug = len(cwd_sessions) == 1
+
         for i, s in enumerate(cwd_sessions):
             if i < n_procs:
                 if now - s.last_activity > IDLE_THRESHOLD:
@@ -117,3 +128,13 @@ def match_sessions_status(
                     s.status = SessionStatus.ACTIVE
             else:
                 s.status = SessionStatus.DONE
+
+        # Map PIDs to labels
+        cwd_procs = procs_by_cwd.get(cwd, [])
+        for j, proc in enumerate(cwd_procs):
+            if use_slug and cwd_sessions:
+                pid_map[proc.pid] = cwd_sessions[min(j, len(cwd_sessions) - 1)].slug
+            else:
+                pid_map[proc.pid] = os.path.basename(cwd)
+
+    return pid_map
