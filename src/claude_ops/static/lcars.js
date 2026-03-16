@@ -332,10 +332,12 @@
     var termWs = new WebSocket(wsUrl);
 
     termWs.addEventListener('open', function() {
-      var dims = fitAddon.proposeDimensions();
-      if (dims) {
-        termWs.send(JSON.stringify({ type: 'resize', cols: dims.cols, rows: dims.rows }));
-      }
+      // Defer initial resize until after switchToTerminal has fitted
+      requestAnimationFrame(function() {
+        requestAnimationFrame(function() {
+          sendTerminalResize();
+        });
+      });
     });
 
     termWs.addEventListener('message', function(event) { xterm.write(event.data); });
@@ -466,8 +468,17 @@
         if (data.terminal_id) {
           showToast('TERMINAL SPAWNED');
           sound.newSession();
-          // Auto-select this terminal when it appears in the list
+
+          // Immediately select the new terminal — don't wait for the next poll
+          var syntheticId = 'lcars-' + data.terminal_id;
+          selectedSessionId = syntheticId;
           pendingTerminalSelect = data.terminal_id;
+
+          // Show terminal panel right away so fitAddon has real dimensions
+          dom.detailView.style.display = 'none';
+          dom.panelTerminal.style.display = 'flex';
+
+          connectTerminal(data.terminal_id, true);
         } else {
           showToast('FAILED TO CREATE TERMINAL');
           sound.alert();
@@ -541,13 +552,17 @@
       return;
     }
 
-    // Check if a pending terminal should be auto-selected
+    // When a pending terminal gets matched to a real session, transfer selection
     if (pendingTerminalSelect) {
       var matchingSession = sessions.find(function (s) {
         return s.terminal_id === pendingTerminalSelect;
       });
       if (matchingSession) {
-        selectedSessionId = matchingSession.id;
+        // Transfer selection from synthetic lcars-<uuid> to the real session ID
+        var syntheticId = 'lcars-' + pendingTerminalSelect;
+        if (selectedSessionId === syntheticId) {
+          selectedSessionId = matchingSession.id;
+        }
         pendingTerminalSelect = null;
       }
     }
