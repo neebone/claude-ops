@@ -18,6 +18,8 @@
   --lcars-yellow: #D0C878;
   --lcars-text: #E8E8F0;
   --lcars-dim: #707898;
+  --lcars-gold: #FFCC99;
+  --lcars-dark: #1A1A2E;
 
   --gap: 3px;
   --sidebar-w: 120px;
@@ -245,6 +247,19 @@ body {
   border-bottom-left-radius: 20px;
 }
 
+.lcars-elbow-tl,
+.lcars-elbow-bl {
+  box-shadow: 4px 0 12px rgba(240, 160, 122, 0.15);
+}
+
+.lcars-sidebar-block {
+  box-shadow: 4px 0 8px rgba(0, 0, 0, 0.3);
+}
+
+.lcars-header-bar {
+  box-shadow: 0 2px 8px rgba(240, 160, 122, 0.1);
+}
+
 /* --------------------------------------------------------------------------
    Footer Bar
    -------------------------------------------------------------------------- */
@@ -434,7 +449,7 @@ body {
 
 .lcars-session-item .session-meta {
   font-size: 11px;
-  color: var(--lcars-dim);
+  color: var(--lcars-lavender);
   margin-top: 4px;
 }
 
@@ -523,7 +538,7 @@ body {
 
 .lcars-value {
   font-family: 'Courier New', monospace;
-  color: var(--lcars-ice);
+  color: var(--lcars-gold);
 }
 
 /* --------------------------------------------------------------------------
@@ -549,7 +564,7 @@ body {
 }
 
 .lcars-detail-label {
-  color: var(--lcars-dim);
+  color: var(--lcars-lavender);
   font-size: 12px;
   flex-shrink: 0;
   margin-right: 20px;
@@ -559,7 +574,7 @@ body {
 .lcars-detail-value {
   font-family: 'Courier New', monospace;
   font-size: 13px;
-  color: var(--lcars-ice);
+  color: #FFFFFF;
   text-align: right;
   text-transform: none;
 }
@@ -634,7 +649,7 @@ body {
 
 .lcars-event-row .event-summary {
   font-size: 12px;
-  color: var(--lcars-dim);
+  color: var(--lcars-text);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -674,8 +689,8 @@ body {
   font-size: 110%;
 }
 
-.status-active { color: var(--lcars-green); animation: pulse 2s infinite; }
-.status-idle   { color: var(--lcars-yellow); }
+.status-active { color: var(--lcars-green); animation: pulse 2s infinite; text-shadow: 0 0 6px var(--lcars-green); }
+.status-idle   { color: var(--lcars-yellow); text-shadow: 0 0 4px var(--lcars-yellow); }
 .status-done   { color: var(--lcars-dim); }
 
 /* --------------------------------------------------------------------------
