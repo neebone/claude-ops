@@ -277,12 +277,29 @@ def _load_state(terminals_snapshot: dict | None = None) -> dict[str, Any]:
                 "label": label,
             }
 
-    # Build cwd-to-PID lookup for session kill buttons
-    pid_by_cwd: dict[str, int] = {}
+    # Build session-ID-to-PID mapping for kill buttons.
+    # Sessions and processes are paired per-CWD: sessions sorted by
+    # last_activity (most recent first) are matched 1:1 with processes.
+    pid_by_session: dict[str, int] = {}
     if processes:
+        procs_by_cwd: dict[str, list[int]] = {}
         for proc in processes:
             resolved = os.path.realpath(proc.cwd)
-            pid_by_cwd[resolved] = proc.pid
+            procs_by_cwd.setdefault(resolved, []).append(proc.pid)
+
+        sessions_by_cwd: dict[str, list[Session]] = {}
+        for s in sessions:
+            resolved = os.path.realpath(s.cwd) if s.cwd else ""
+            sessions_by_cwd.setdefault(resolved, []).append(s)
+
+        for cwd, cwd_sessions in sessions_by_cwd.items():
+            pids = procs_by_cwd.get(cwd, [])
+            if not pids:
+                continue
+            cwd_sessions.sort(key=lambda s: s.last_activity, reverse=True)
+            for i, s in enumerate(cwd_sessions):
+                if i < len(pids):
+                    pid_by_session[s.id] = pids[i]
 
     seen_keys: set[tuple] = set()
     all_events = []
@@ -338,10 +355,7 @@ def _load_state(terminals_snapshot: dict | None = None) -> dict[str, Any]:
 
     session_dicts = []
     for s in sessions:
-        s_pid = None
-        if s.cwd:
-            resolved = os.path.realpath(s.cwd)
-            s_pid = pid_by_cwd.get(resolved)
+        s_pid = pid_by_session.get(s.id)
         d = _session_to_dict(s, terminal_matches.get(s.id), s_pid)
         session_dicts.append(d)
 
